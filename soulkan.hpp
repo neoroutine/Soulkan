@@ -1866,7 +1866,7 @@ namespace SOULKAN_TEST_NAMESPACE
 		glfwInit();
 		dq.push([]() { glfwTerminate(); });
 
-		SOULKAN_NAMESPACE::Window w1(800, 600, "Salut maeba");
+		SOULKAN_NAMESPACE::Window w1(800, 600, "Hello");
 		SOULKAN_NAMESPACE::Window w(std::move(w1));
 		dq.push([&]() { w.destroy(); /*Not necessary since glfwTerminate() destroys every remaining window*/});
 
@@ -1879,7 +1879,7 @@ namespace SOULKAN_TEST_NAMESPACE
 		while (!glfwWindowShouldClose(w.window()))
 		{
 			glfwPollEvents();
-			w.rename(std::format("Salut maeba ({})", i));
+			w.rename(std::format("Hello ({})", i));
 			i++;
 		}
 
@@ -1893,7 +1893,7 @@ namespace SOULKAN_TEST_NAMESPACE
 		glfwInit();
 		dq.push([]() { glfwTerminate(); });
 
-		SOULKAN_NAMESPACE::Window window(800, 600, "Salut maeba");
+		SOULKAN_NAMESPACE::Window window(800, 600, "Hello");
 		dq.push([&]() { window.destroy(); /*Not necessary since glfwTerminate() destroys every remaining window*/});
 
 		SOULKAN_NAMESPACE::Instance instance(true);
@@ -1922,20 +1922,20 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::CommandBuffer commandBuffer = graphicsCommandPool.allocate();
 		SOULKAN_NAMESPACE::Queue graphicsQueue = device.queue(SOULKAN_NAMESPACE::QueueFamilyCapability::GRAPHICS, 0);
 
-		std::vector<SOULKAN_NAMESPACE::Vertex> triangleMesh = SOULKAN_NAMESPACE::Vertex::triangleMesh();
-		std::vector<SOULKAN_NAMESPACE::Vertex> monkeyMesh = SOULKAN_NAMESPACE::Vertex::objMesh("monkey.obj");
+		//std::vector<SOULKAN_NAMESPACE::Vertex> triangleMesh = SOULKAN_NAMESPACE::Vertex::triangleMesh();
+		std::vector<SOULKAN_NAMESPACE::Vertex> mesh = SOULKAN_NAMESPACE::Vertex::objMesh("monkey.obj");
 
 		//TODO:Try to use buffer to store mvp matrix (storage buffer or uniform buffer)
 
-		SOULKAN_NAMESPACE::Buffer monkeyMeshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, monkeyMesh.size()*sizeof(SOULKAN_NAMESPACE::Vertex));
-		dq.push([&]() { monkeyMeshBuffer.destroy(); });
+		SOULKAN_NAMESPACE::Buffer meshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, mesh.size()*sizeof(SOULKAN_NAMESPACE::Vertex));
+		dq.push([&]() { meshBuffer.destroy(); });
 
-		monkeyMeshBuffer.upload(monkeyMesh.data(), monkeyMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
+		meshBuffer.upload(mesh.data(), mesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
 
-		SOULKAN_NAMESPACE::Buffer triangleMeshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
-		dq.push([&]() { triangleMeshBuffer.destroy(); });
+		//SOULKAN_NAMESPACE::Buffer triangleMeshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
+		//dq.push([&]() { triangleMeshBuffer.destroy(); });
 
-		monkeyMeshBuffer.upload(triangleMesh.data(), triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
+		//triangleMeshBuffer.upload(triangleMesh.data(), triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
 
 		SOULKAN_NAMESPACE::Buffer meshMatrixBuffer(device, allocator, vk::BufferUsageFlagBits::eUniformBuffer, sizeof(glm::mat4));
 		dq.push([&]() { meshMatrixBuffer.destroy(); });
@@ -1944,8 +1944,8 @@ namespace SOULKAN_TEST_NAMESPACE
 		meshMatrixBuffer.upload(&identityMat, sizeof(identityMat));
 		vk::DeviceAddress meshMatrixBufferAddress = meshMatrixBuffer.address();
 
-		std::vector<vk::DeviceAddress> bufferAddresses1{ monkeyMeshBuffer.address(), meshMatrixBuffer.address() };
-		std::vector<vk::DeviceAddress> bufferAddresses2{ triangleMeshBuffer.address(), meshMatrixBuffer.address() };
+		std::vector<vk::DeviceAddress> bufferAddresses1{ meshBuffer.address(), meshMatrixBuffer.address() };
+		//std::vector<vk::DeviceAddress> bufferAddresses2{ triangleMeshBuffer.address(), meshMatrixBuffer.address() };
 
 		vk::Fence renderFence = device.createFence();
 		dq.push([&]() { device.vk().destroyFence(renderFence); });
@@ -1977,7 +1977,7 @@ namespace SOULKAN_TEST_NAMESPACE
 		vk::PipelineLayout boundPipelineLayout = solidPipeline.layout();
 
 		glm::vec3 camPos = { 0.f,0.f,-2.f };
-		float rotationSpeed = 0.1f;
+		float rotationSpeed = 0.3f;
 
 		uint32_t i = 0;
 		double lastInputTime = 0;
@@ -2036,7 +2036,7 @@ namespace SOULKAN_TEST_NAMESPACE
 
 			//Switch to wireframe pipeline when pressing w
 			state = glfwGetKey(window.window(), GLFW_KEY_Z);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 1) //Pressed a key more than one second ago
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 1)
 			{
 				lastInputTime = glfwGetTime();
 				boundPipeline = wireframePipeline.vk();
@@ -2045,7 +2045,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_A);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) //Pressed a key more than one second ago
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) 
 			{
 				lastInputTime = glfwGetTime();
 
@@ -2053,7 +2053,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_D);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) //Pressed a key more than one second ago
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
 			{
 				lastInputTime = glfwGetTime();
 
@@ -2061,7 +2061,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_S);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) //Pressed a key more than one second ago
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
 			{
 				lastInputTime = glfwGetTime();
 
@@ -2069,7 +2069,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_W);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) //Pressed a key more than one second ago
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
 			{
 				lastInputTime = glfwGetTime();
 
@@ -2077,7 +2077,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_SPACE);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) //Pressed a key more than one second ago
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) 
 			{
 				lastInputTime = glfwGetTime();
 
@@ -2085,27 +2085,11 @@ namespace SOULKAN_TEST_NAMESPACE
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_LEFT_SHIFT);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) //Pressed a key more than one second ago
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
 			{
 				lastInputTime = glfwGetTime();
 
 				camPos.y += 0.2f;
-			}
-
-			state = glfwGetKey(window.window(), GLFW_KEY_O);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.05) //Pressed a key more than one second ago
-			{
-				lastInputTime = glfwGetTime();
-
-				rotationSpeed += 0.01f;
-			}
-
-			state = glfwGetKey(window.window(), GLFW_KEY_P);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.05) //Pressed a key more than one second ago
-			{
-				lastInputTime = glfwGetTime();
-
-				rotationSpeed -= 0.01f;
 			}
 
 			//DRAWING
@@ -2143,13 +2127,11 @@ namespace SOULKAN_TEST_NAMESPACE
 
 			commandBuffer.vk().pushConstants(boundPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, 2*sizeof(vk::DeviceAddress), bufferAddresses1.data());
 			
-			commandBuffer.vk().draw(monkeyMesh.size(), 1, 0, 0);
+			commandBuffer.vk().draw(mesh.size(), 1, 0, 0);
 
-			//
+			/*commandBuffer.vk().pushConstants(boundPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, 2 * sizeof(vk::DeviceAddress), bufferAddresses2.data());
 
-			commandBuffer.vk().pushConstants(boundPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, 2 * sizeof(vk::DeviceAddress), bufferAddresses2.data());
-
-			commandBuffer.vk().draw(triangleMesh.size(), 1, 0, 0);
+			commandBuffer.vk().draw(triangleMesh.size(), 1, 0, 0);*/
 
 			commandBuffer.endRendering();
 
