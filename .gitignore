@@ -20,3 +20,10 @@ x64/Debug/vc143.pdb
 Soulkan.vcxproj
 debugMessenger.txt
 commentator.py
+*.exe
+*.mtl
+*.mtl
+*.obj
+*.recipe
+*.iobj
+*.ipdb
