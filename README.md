@@ -24,4 +24,4 @@ A **powerful** and **concise** library for **simplifying** [Vulkan](https://gith
 
 ![Wireframe monkey mesh](images/wireframe_monkey.png)
 
-courtesy of the [McGuire Computer Graphics Archive](http://casual-effects.com/data/index.html)
+*courtesy of the [McGuire Computer Graphics Archive](http://casual-effects.com/data/index.html)*
