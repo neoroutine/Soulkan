@@ -1,8 +1,0 @@
-﻿  main.cpp
-E:\source\repos\soulkan\Soulkan\Soulkan\soulkan.hpp(1835,48): warning C4267: 'argument': conversion from 'size_t' to 'uint32_t', possible loss of data
-LINK : warning LNK4075: ignoring '/INCREMENTAL' due to '/LTCG' specification
-  Generating code
-  Previous IPDB not found, fall back to full compilation.
-  All 3436 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
-  Finished generating code
-  Soulkan.vcxproj -> E:\source\repos\soulkan\Soulkan\x64\Release\Soulkan.exe
