@@ -1966,15 +1966,11 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::vec_ref<SOULKAN_NAMESPACE::Shader> shaders{ vertShader, fragShader };
 
 		SOULKAN_NAMESPACE::GraphicsPipeline solidPipelineTmp(device);
-		SOULKAN_NAMESPACE::GraphicsPipeline solidPipeline(device, shaders, 
-															 vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eFill, 
-															 swapchain.extent(), swapchain.imageFormat());
+		SOULKAN_NAMESPACE::GraphicsPipeline solidPipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eFill, swapchain.extent(), swapchain.imageFormat());
 		dq.push([&]() { solidPipeline.destroy(); });
 		
 		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipelineTmp(device);
-		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipeline(device, shaders,
-															  vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eLine,
-															  swapchain.extent(), swapchain.imageFormat());
+		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eLine, swapchain.extent(), swapchain.imageFormat());
 		dq.push([&]() { wireframePipeline.destroy(); });
 
 		vk::Pipeline boundPipeline = solidPipeline.vk();
@@ -2003,7 +1999,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			}
 
 			glfwPollEvents();
-			window.rename(std::format("Salut maeba ({})", i));
+			window.rename(std::format("Hello ({})", i));
 
 
 			//Shader recompilation and graphics pipeline rebuilding when pressing R
