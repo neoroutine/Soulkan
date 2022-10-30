@@ -2013,13 +2013,9 @@ namespace SOULKAN_TEST_NAMESPACE
 						shaders[0].get().shader(true);//Vertex
 						shaders[1].get().shader(true);//Fragment
 
-						solidPipelineTmp = SOULKAN_NAMESPACE::GraphicsPipeline(device, shaders,
-																			   vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eFill,
-																			   swapchain.extent(), swapchain.imageFormat());
+						solidPipelineTmp = SOULKAN_NAMESPACE::GraphicsPipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eFill, swapchain.extent(), swapchain.imageFormat());
 
-						wireframePipelineTmp = SOULKAN_NAMESPACE::GraphicsPipeline(device, shaders,
-																			   vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eLine,
-																			   swapchain.extent(), swapchain.imageFormat());
+						wireframePipelineTmp = SOULKAN_NAMESPACE::GraphicsPipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eLine, swapchain.extent(), swapchain.imageFormat());
 
 						status = true; //Signaling thread has finished
 					});
