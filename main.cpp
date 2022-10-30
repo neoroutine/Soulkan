@@ -4,5 +4,5 @@
 
 int main()
 {
-	skt::infos_test();	
+	skt::triangle_test();	
 }
