@@ -91,6 +91,7 @@ namespace SOULKAN_NAMESPACE
 
 		}
 
+		void setManual() { manual_ = true; }
 
 	protected:
 		bool manual_ = false;
@@ -189,9 +190,8 @@ namespace SOULKAN_NAMESPACE
 
 		~Window() 
 		{ 
-			if (destroyed_) { return; }
+			if (manual_) { return; }
 			destroy();
-			destroyed_ = true;
 		}
 
 		void rename(std::string newTitle) 
@@ -324,6 +324,7 @@ namespace SOULKAN_NAMESPACE
 
 		~Instance()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -647,6 +648,7 @@ namespace SOULKAN_NAMESPACE
 
 		~Device()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 		//TODO:Implement generic destroy, calling getProcAddr to get correct destroyFunction according to type of parameter
@@ -941,6 +943,7 @@ namespace SOULKAN_NAMESPACE
 
 		~Fence()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -1005,6 +1008,7 @@ namespace SOULKAN_NAMESPACE
 
 		~Semaphore()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -1219,6 +1223,7 @@ namespace SOULKAN_NAMESPACE
 
 		~Swapchain()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -1449,6 +1454,7 @@ namespace SOULKAN_NAMESPACE
 
 		~CommandPool()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -1571,7 +1577,8 @@ namespace SOULKAN_NAMESPACE
 
 		~Shader()
 		{
-			device_.get().vk().destroyShaderModule(module_);
+			if (manual_) { return; }
+			destroy();
 		}
 		
 		//INFO:Expensive, reads entire file
@@ -1845,6 +1852,7 @@ namespace SOULKAN_NAMESPACE
 
 		~GraphicsPipeline()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -1922,6 +1930,7 @@ namespace SOULKAN_NAMESPACE
 
 		~Allocator()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -2009,6 +2018,7 @@ namespace SOULKAN_NAMESPACE
 
 		~Buffer()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -2146,6 +2156,7 @@ namespace SOULKAN_NAMESPACE
 
 		~DepthImage()
 		{
+			if (manual_) { return; }
 			destroy();
 		}
 
@@ -2311,6 +2322,7 @@ namespace SOULKAN_TEST_NAMESPACE
 
 	void move_semantics_test()
 	{
+		//TODO:Test move semantics of every class here
 		SOULKAN_NAMESPACE::DeletionQueue dq;
 
 		glfwInit();
