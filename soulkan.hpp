@@ -78,8 +78,24 @@
 //Implement appropriate Copy/Move constructors : important
 //Keep in mind smart ptrs : important
 //Implement modules to further debug or give more infos (like pipeline debug infos from vulkan extensions) : not important
+//Move semantics and RAII work together with vulkan destruction : "It is valid to pass these values (VK_NULL_HANDLE, NULL) to vkDestroy* or vkFree* commands, which will silently ignore these values."
 namespace SOULKAN_NAMESPACE
 {
+	//MAYB:Opt-in for manual destruction by setting manual to true, every class with destroyables should derive from Destroyable
+	//INFO:vkCmdFillBuffer to clear buffer data
+	class Destroyable
+	{
+	public:
+		Destroyable()
+		{
+
+		}
+
+
+	protected:
+		bool manual = false;
+		bool destroyed = false;
+	};
 
 	/*---------------------UTILS---------------------*/
 	class DeletionQueue
@@ -109,7 +125,7 @@ namespace SOULKAN_NAMESPACE
 	template<class T>
 	using vec_ref = std::vector<std::reference_wrapper<T>>;
 	/*---------------------GLFW---------------------*/
-	class Window
+	class Window : Destroyable
 	{
 	public:
 		Window(uint32_t width, uint32_t height, std::string title) :
@@ -157,6 +173,17 @@ namespace SOULKAN_NAMESPACE
 		Window(const Window&) = delete;
 		Window& operator=(const Window&) = delete;
 
+		void destroy() 
+		{ 
+			if (destroyed) { return; }
+			if (window_ != nullptr) 
+			{ 
+				glfwDestroyWindow(window_); 
+				window_ = nullptr; /*TODO:Check if setting to nullptr is redundant*/ 
+			} 
+			destroyed = true;
+		}
+
 		//TODO:Check if it should be kept
 		~Window() { destroy(); }
 
@@ -166,8 +193,6 @@ namespace SOULKAN_NAMESPACE
 			glfwSetWindowTitle(window_, newTitle.c_str()); 
 			title_ = newTitle; 
 		}
-
-		void destroy() { if (window_ != nullptr) { glfwDestroyWindow(window_); window_ = nullptr; /*TODO:Check if setting to nullptr is redundant*/ } }
 
 		uint32_t width() const     { return width_; }
 		uint32_t height() const    { return height_; }
@@ -197,7 +222,7 @@ namespace SOULKAN_NAMESPACE
 		COUNT
 	};
 
-	class Instance
+	class Instance : Destroyable
 	{
 	public:
 		Instance(bool validation)
@@ -278,30 +303,36 @@ namespace SOULKAN_NAMESPACE
 		Instance(const Instance&) = delete;
 		Instance& operator=(const Instance&) = delete;
 
-		//INFO/TODO:Defining a destructor results in "exited with code -1073741819"
-		//~Instance()
-		//{
-		//	destroy();
-		//}
-
-
 		void destroy()
 		{
+			if (destroyed) { return; }
 			auto dynamicLoader = vk::DispatchLoaderDynamic(instance_, vkGetInstanceProcAddr);
 			instance_.destroyDebugUtilsMessengerEXT(debugMessenger_, nullptr, dynamicLoader);
 			instance_.destroy();
 		}
 
-		//Not cached since instance can vary
+		~Instance()
+		{
+			instance_.destroySurfaceKHR(surface_);
+			destroy();
+			destroyed = true;
+		}
+
 		vk::SurfaceKHR surface(Window& window)
 		{
+			if (surface_ != vk::SurfaceKHR(nullptr))
+			{
+				return surface_;
+			}
+
 			VkSurfaceKHR tmp;
 			VK_CHECK(vk::Result(glfwCreateWindowSurface(instance_, window.window(), nullptr, &tmp)));
 			GLFW_CHECK(/*Checking if window creation was succesfull, TODO:Not sure if necessary after VK_CHECK*/);
 
 			if (tmp == VK_NULL_HANDLE) { KILL("An error occured in surface creation, killing process"); } //TODO:Not sure if necessary after VK_CHECK
 
-			return vk::SurfaceKHR(tmp);
+			surface_ = vk::SurfaceKHR(tmp);
+			return surface_;
 		}
 
 		std::vector<std::string> supportedExtensions()
@@ -408,6 +439,8 @@ namespace SOULKAN_NAMESPACE
 
 		vk::ApplicationInfo appInfo_ = {};
 
+		vk::SurfaceKHR surface_{};
+
 		std::vector<std::string> supportedExtensions_ = {};
 
 		std::vector<vk::PhysicalDevice> availables_ = {};
@@ -434,6 +467,8 @@ namespace SOULKAN_NAMESPACE
 	class Device;
 	class CommandBuffer;
 	class Swapchain;
+	class Fence; //For Queue::submit
+	class Semaphore; //For Queue::submit
 
 	//QUEUE
 	class Queue
@@ -450,13 +485,11 @@ namespace SOULKAN_NAMESPACE
 		Queue(Queue& other) = delete;
 		Queue& operator=(Queue& other) = delete;
 
-		void submit(vk::Semaphore waitSemaphore,
-			vk::Semaphore signalSemaphore, CommandBuffer& commandBuffer,
-			vk::Fence fence);//Defined after CommandBuffer definition
+		void submit(CommandBuffer& commandBuffer, Semaphore &waitSemaphore, Semaphore &signalSemaphore, Fence &fence);
 
-		void present(Swapchain& swapchain, vk::Semaphore waitSemaphore, uint32_t imageIndex);//Defined after swapchain definition (alongside submit)
+		void present(Swapchain& swapchain, Semaphore &waitSemaphore, uint32_t imageIndex);//Defined after swapchain definition (alongside submit)
 
-		uint32_t index() { return index_; }
+		uint32_t index() const { return index_; }
 	private:
 		Device& device_;
 		vk::Queue queue_;
@@ -465,7 +498,7 @@ namespace SOULKAN_NAMESPACE
 	};
 
 	//DEVICE
-	class Device
+	class Device : Destroyable
 	{
 	public:
 		Device(vk::PhysicalDevice physicalDevice, Window& window, vk::SurfaceKHR surface) :
@@ -534,42 +567,21 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
+			if (destroyed) { return; }
 			device_.destroy();
+			destroyed = true;
 		}
 
+		~Device()
+		{
+			destroy();
+		}
 		//TODO:Implement generic destroy, calling getProcAddr to get correct destroyFunction according to type of parameter
 		//Fence
-		vk::Fence createFence()
-		{
-			vk::FenceCreateInfo createInfo = {};
-			createInfo.flags = vk::FenceCreateFlagBits::eSignaled; //INFO:Fence is created as signaled so that the first call to waitForFences() returns instantly
 
-			vk::Fence fence;
-			VK_CHECK(device_.createFence(&createInfo, nullptr, &fence));
+		void waitFence(Fence &fence);
 
-			return fence;
-		}
-
-		void waitFence(vk::Fence fence)
-		{
-			VK_CHECK(device_.waitForFences(1, &fence, true, 40'000'000));//TODO:Temporary hacky fix to avoid timeout when loading big .obj
-		}
-
-		void resetFence(vk::Fence fence)
-		{
-			VK_CHECK(device_.resetFences(1, &fence));
-		}
-
-		//Semaphore
-		vk::Semaphore createSemaphore()
-		{
-			vk::SemaphoreCreateInfo createInfo = {};
-
-			vk::Semaphore semaphore;
-			VK_CHECK(device_.createSemaphore(&createInfo, nullptr, &semaphore));
-			
-			return semaphore;
-		}
+		void resetFence(Fence &fence);
 
 
 		vk::Extent2D extent()
@@ -798,8 +810,105 @@ namespace SOULKAN_NAMESPACE
 		}
 	};
 
+	//FENCE
+	class Fence : Destroyable
+	{
+	public:
+		Fence(Device& device) : device_(device)
+		{
+			vk::FenceCreateInfo createInfo = {};
+			createInfo.flags = vk::FenceCreateFlagBits::eSignaled; //INFO:Fence is created as signaled so that the first call to waitForFences() returns instantly
+
+			vk::Fence fence;
+			VK_CHECK(device_.vk().createFence(&createInfo, nullptr, &fence));
+			
+			fence_ = fence;
+		}
+
+		//TODO:Implement move constructors
+		Fence(Fence&& other) = delete;
+		Fence& operator=(Fence&& other) = delete;
+
+		//No copy constructors
+		Fence(Fence& other) = delete;
+		Fence& operator=(Fence& other) = delete;
+
+		void destroy()
+		{
+			if (destroyed) { return; }
+			device_.vk().destroyFence(fence_);
+			destroyed = true;
+		}
+
+		~Fence()
+		{
+			destroy();
+		}
+
+		vk::Fence vk() const
+		{
+			return fence_;
+		}
+	private:
+		Device& device_;
+		vk::Fence fence_{};
+	};
+
+	//SEMAPHORE
+	class Semaphore : Destroyable
+	{
+	public:
+		Semaphore(Device& device) : device_(device)
+		{
+			vk::SemaphoreCreateInfo createInfo = {};
+
+			VK_CHECK(device_.vk().createSemaphore(&createInfo, nullptr, &semaphore_));
+		}
+
+		//TODO:Implement move constructors
+		Semaphore(Semaphore&& other) = delete;
+		Semaphore& operator=(Semaphore&& other) = delete;
+
+		//No copy constructors
+		Semaphore(Semaphore& other) = delete;
+		Semaphore& operator=(Semaphore& other) = delete;
+
+		void destroy()
+		{
+			if (destroyed) { return; }
+			device_.vk().destroySemaphore(semaphore_);
+			destroyed = true;
+		}
+
+		~Semaphore()
+		{
+			destroy();
+		}
+
+		vk::Semaphore vk() const
+		{
+			return semaphore_;
+		}
+	private:
+		Device& device_;
+		vk::Semaphore semaphore_;
+	};
+
+	//DEVICE
+	void Device::waitFence(Fence &fence)
+	{
+		vk::Fence vkFence = fence.vk();
+		VK_CHECK(device_.waitForFences(1, &vkFence, true, 40'000'000));//TODO:Temporary hacky fix to avoid timeout when loading big .obj
+	}
+
+	void Device::resetFence(Fence &fence)
+	{
+		vk::Fence vkFence = fence.vk();
+		VK_CHECK(device_.resetFences(1, &vkFence));
+	}
+
 	//SWAPCHAIN
-	class Swapchain
+	class Swapchain : Destroyable
 	{
 	public:
 
@@ -918,29 +1027,36 @@ namespace SOULKAN_NAMESPACE
 			return imageViews_;
 		}
 
-		uint32_t nextImage(vk::Semaphore signalSemaphore)
+		uint32_t nextImage(Semaphore &signalSemaphore)
 		{
 			uint32_t imageIndex;
-			VK_CHECK(device_.vk().acquireNextImageKHR(swapchain_, 1'000'000, signalSemaphore, nullptr, &imageIndex));
+			VK_CHECK(device_.vk().acquireNextImageKHR(swapchain_, 1'000'000, signalSemaphore.vk(), nullptr, &imageIndex));
 
 			return imageIndex;
 		}
 
 		void destroy()
 		{
+			if (destroyed) { return; }
 			device_.vk().destroySwapchainKHR(swapchain_);
 
 			for (auto& i : imageViews_)
 			{
 				device_.vk().destroyImageView(i);
 			}
+			destroyed = true;
 		}
 
-		vk::SwapchainKHR vk() { return swapchain_; }
-		vk::Extent2D extent() { return extent_; }
-		vk::SurfaceFormatKHR surfaceFormat() { return surfaceFormat_; }
-		vk::Format imageFormat() { return surfaceFormat_.format; }
-		vk::PresentModeKHR presentMode() { return presentMode_; }
+		~Swapchain()
+		{
+			destroy();
+		}
+
+		vk::SwapchainKHR vk() const { return swapchain_; }
+		vk::Extent2D extent() const  { return extent_; }
+		vk::SurfaceFormatKHR surfaceFormat() const  { return surfaceFormat_; }
+		vk::Format imageFormat() const  { return surfaceFormat_.format; }
+		vk::PresentModeKHR presentMode() const  { return presentMode_; }
 	private:
 		Device& device_;
 		vk::SwapchainKHR swapchain_{};
@@ -959,7 +1075,7 @@ namespace SOULKAN_NAMESPACE
 
 	//COMMAND BUFFER
 	//MAYB:Might want to tie swapchain to command buffer 
-	class CommandBuffer
+	class CommandBuffer : Destroyable
 	{
 	public:
 		CommandBuffer(CommandPool& commandPool, vk::CommandBuffer commandBuffer) : commandPool_(commandPool), commandBuffer_(commandBuffer) {}
@@ -1063,9 +1179,9 @@ namespace SOULKAN_NAMESPACE
 			commandBuffer_.pipelineBarrier2(dependencyInfo);
 		}
 
-		bool graphics();//Defined after CommandPool definition
+		bool graphics() const;//Defined after CommandPool definition
 
-		vk::CommandBuffer vk() { return commandBuffer_; }
+		vk::CommandBuffer vk() const  { return commandBuffer_; }
 
 		const CommandPool& commandPool_;
 
@@ -1074,7 +1190,7 @@ namespace SOULKAN_NAMESPACE
 	};
 
 	//COMMAND POOL
-	class CommandPool
+	class CommandPool : Destroyable
 	{
 	public:
 		//TODO:Change second parameter to QueueFamilyCapability instead of index, no need to expose that kind of complexity to the caller
@@ -1119,7 +1235,14 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
+			if (destroyed) { return; }
 			device_.vk().destroyCommandPool(pool_);
+			destroyed = true;
+		}
+
+		~CommandPool()
+		{
+			destroy();
 		}
 
 		vk::CommandPool vk() const { return pool_; }
@@ -1136,16 +1259,14 @@ namespace SOULKAN_NAMESPACE
 
 	//COMMAND BUFFER
 	//Returns true if command buffer was allocated from a graphics capable command pool
-	bool CommandBuffer::graphics()
+	bool CommandBuffer::graphics() const
 	{
 		return (commandPool_.index() == commandPool_.device().queueFamilies()[INDEX(QueueFamilyCapability::GENERAL)]) ||
 			(commandPool_.index() == commandPool_.device().queueFamilies()[INDEX(QueueFamilyCapability::GRAPHICS)]);
 	}
 
 	//QUEUE
-	void Queue::submit(vk::Semaphore waitSemaphore,
-		vk::Semaphore signalSemaphore, CommandBuffer& commandBuffer,
-		vk::Fence signalFence)
+	void Queue::submit(CommandBuffer& commandBuffer, Semaphore &waitSemaphore, Semaphore &signalSemaphore, Fence &signalFence)//Defined after CommandBuffer definition
 	{
 		vk::SubmitInfo submitInfo = {};
 
@@ -1153,30 +1274,32 @@ namespace SOULKAN_NAMESPACE
 
 		submitInfo.pWaitDstStageMask = &waitStage;
 
+		vk::Semaphore vkWaitSemaphore = waitSemaphore.vk();
 		submitInfo.waitSemaphoreCount = 1;
-		submitInfo.pWaitSemaphores = &waitSemaphore;
+		submitInfo.pWaitSemaphores = &vkWaitSemaphore;
 
+		vk::Semaphore vkSignalSemaphore = signalSemaphore.vk();
 		submitInfo.signalSemaphoreCount = 1;
-		submitInfo.pSignalSemaphores = &signalSemaphore;
+		submitInfo.pSignalSemaphores = &vkSignalSemaphore;
 
-		auto vkCommandBuffer = commandBuffer.vk();
+		vk::CommandBuffer vkCommandBuffer = commandBuffer.vk();
 		submitInfo.commandBufferCount = 1;
 		submitInfo.pCommandBuffers = &vkCommandBuffer;
 
 		//signalFence 
-		VK_CHECK(queue_.submit(1, &submitInfo, signalFence));
+		VK_CHECK(queue_.submit(1, &submitInfo, signalFence.vk()));
 	}
 
-	void Queue::present(Swapchain& swapchain, vk::Semaphore waitSemaphore, uint32_t imageIndex)
+	void Queue::present(Swapchain& swapchain, Semaphore &waitSemaphore, uint32_t imageIndex)
 	{
 		vk::PresentInfoKHR presentInfo = {};
 
 		auto vkSwapchain = swapchain.vk();
-
 		presentInfo.pSwapchains = &vkSwapchain;
 		presentInfo.swapchainCount = 1;
 
-		presentInfo.pWaitSemaphores = &waitSemaphore;
+		vk::Semaphore vkWaitSemaphore = waitSemaphore.vk();
+		presentInfo.pWaitSemaphores = &vkWaitSemaphore;
 		presentInfo.waitSemaphoreCount = 1;
 
 		presentInfo.pImageIndices = &imageIndex;
@@ -1184,7 +1307,8 @@ namespace SOULKAN_NAMESPACE
 		VK_CHECK(queue_.presentKHR(&presentInfo));
 	}
 
-	class Shader
+	//TODO:Save compiled spirv to file for later re-use
+	class Shader : Destroyable
 	{
 	public:
 		Shader(Device& device, std::string filename, vk::ShaderStageFlagBits shaderStage) : device_(device), filename_(filename), stage_(shaderStage) {}
@@ -1198,6 +1322,13 @@ namespace SOULKAN_NAMESPACE
 		Shader& operator=(Shader& other) = delete;
 
 		void destroy()
+		{
+			if (destroyed) { return; }
+			device_.vk().destroyShaderModule(module_);
+			destroyed = true;
+		}
+
+		~Shader()
 		{
 			device_.vk().destroyShaderModule(module_);
 		}
@@ -1273,7 +1404,7 @@ namespace SOULKAN_NAMESPACE
 			return module_;
 		}
 
-		vk::ShaderStageFlagBits stage()
+		vk::ShaderStageFlagBits stage() const
 		{
 			return stage_;
 		}
@@ -1295,7 +1426,7 @@ namespace SOULKAN_NAMESPACE
 		}
 	};
 
-	class GraphicsPipeline
+	class GraphicsPipeline : Destroyable
 	{
 	public:
 		GraphicsPipeline(Device &device) : device_(device) {}
@@ -1459,12 +1590,19 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
+			if (destroyed) { return; }
 			device_.vk().destroyPipelineLayout(pipelineLayout_);
 			device_.vk().destroyPipeline(pipeline_);
+			destroyed = true;
 		}
 
-		vk::Pipeline vk() { return pipeline_; }
-		vk::PipelineLayout layout() { return pipelineLayout_; }
+		~GraphicsPipeline()
+		{
+			destroy();
+		}
+
+		vk::Pipeline vk() const  { return pipeline_; }
+		vk::PipelineLayout layout() const  { return pipelineLayout_; }
 
 	private:
 		vk::Pipeline pipeline_{};
@@ -1480,7 +1618,7 @@ namespace SOULKAN_NAMESPACE
 		vk::Format imageFormat_{};
 	};
 
-	class Allocator
+	class Allocator : Destroyable
 	{
 	public:
 		Allocator(Instance& instance, Device& device) : instance_(instance), device_(device)
@@ -1505,7 +1643,14 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
+			if (destroyed) { return; }
 			vmaDestroyAllocator(allocator_);
+			destroyed = true;
+		}
+
+		~Allocator()
+		{
+			destroy();
 		}
 
 		VmaAllocator vma() const { return allocator_; }
@@ -1517,7 +1662,7 @@ namespace SOULKAN_NAMESPACE
 		Device& device_;
 	};
 
-	class Buffer
+	class Buffer : Destroyable
 	{
 	public:
 		Buffer(Device &device, Allocator& allocator, vk::BufferUsageFlagBits usage, vk::DeviceSize size) : device_(device), allocator_(allocator)
@@ -1551,7 +1696,14 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
+			if (destroyed) { return; }
 			vmaDestroyBuffer(allocator_.vma(), buffer_, allocation_);
+			destroyed = true;
+		}
+
+		~Buffer()
+		{
+			destroy();
 		}
 
 		void upload(void *data, size_t size)
@@ -1585,7 +1737,7 @@ namespace SOULKAN_NAMESPACE
 		vk::DeviceAddress address_ = 0;
 	};
 
-	class DepthImage
+	class DepthImage : Destroyable
 	{
 	public:
 		DepthImage(Device &device, Allocator &allocator, vk::Extent2D extent) : device_(device), allocator_(allocator)
@@ -1645,8 +1797,15 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
+			if (destroyed) { return; }
 			device_.vk().destroyImageView(view_);
 			vmaDestroyImage(allocator_.vma(), image_, allocation_);
+			destroyed = true;
+		}
+
+		~DepthImage()
+		{
+			destroy();
 		}
 
 		vk::Image image() const { return image_; }
@@ -1806,57 +1965,7 @@ namespace SOULKAN_TEST_NAMESPACE
 
 	void infos_test()
 	{
-		SOULKAN_NAMESPACE::DeletionQueue dq;
-
-		glfwInit();
-		dq.push([]() { glfwTerminate(); });
-
-		SOULKAN_NAMESPACE::Instance instance(true);
-		dq.push([&]() { instance.destroy(); });
-
-		//Instance extensions
-		auto supportedExtensions = instance.supportedExtensions();
-		std::cout << std::format("--Supported instance extensions ({}):", supportedExtensions.size()) << std::endl;
-		for (const auto& ext : supportedExtensions)
-		{
-			std::cout << "__" << ext << std::endl;
-		}
-		std::cout << std::endl;
-
-		//Physical devices
-		auto availables = instance.availables();
-		std::cout << std::format("--Available physical devices ({}):", availables.size()) << std::endl;
-		for (const auto& a : availables)
-		{
-			std::cout << "__" << a.getProperties().deviceName << std::endl;
-		}
-
-		auto suitables = instance.suitables();
-		std::cout << std::format("--Suitable physical devices ({}):", suitables.size()) << std::endl;
-		for (const auto& s : suitables)
-		{
-			std::cout << "__" << s.getProperties().deviceName << std::endl;
-		}
-
-		auto best = instance.best();
-		std::cout << "--Best physical devices: " << std::endl;
-
-		std::cout << best.getProperties().deviceName << ":" << VK_API_VERSION_FULL(best.getProperties().apiVersion) << std::endl;
-
-		/*SOULKAN_NAMESPACE::Device dev(best, );
-
-		auto supportedDeviceExtensions = dev.supportedExtensions();
-		std::cout << std::format("--Supported device extensions ({}):", supportedDeviceExtensions.size()) << std::endl;
-
-		for (const auto& e : supportedDeviceExtensions)
-		{
-			std::cout << "__" << e << std::endl;
-		}
-		std::cout << std::endl;
-
-		std::cout << "VK_KHR_dynamic_rendering is " << (dev.isSupported("VK_KHR_dynamic_rendering") ? "supported" : "not supported") << std::endl;*/
-
-		dq.flush();
+		//TODO:Display infos about GPU
 	}
 
 	void move_semantics_test()
@@ -1868,11 +1977,9 @@ namespace SOULKAN_TEST_NAMESPACE
 
 		SOULKAN_NAMESPACE::Window w1(800, 600, "Hello");
 		SOULKAN_NAMESPACE::Window w(std::move(w1));
-		dq.push([&]() { w.destroy(); /*Not necessary since glfwTerminate() destroys every remaining window*/});
 
 		SOULKAN_NAMESPACE::Instance instance1(true);
 		SOULKAN_NAMESPACE::Instance instance(std::move(instance1));
-		dq.push([&]() { instance.destroy(); });
 
 
 		uint32_t i = 0;
@@ -1894,30 +2001,22 @@ namespace SOULKAN_TEST_NAMESPACE
 		dq.push([]() { glfwTerminate(); });
 
 		SOULKAN_NAMESPACE::Window window(800, 600, "Hello");
-		dq.push([&]() { window.destroy(); /*Not necessary since glfwTerminate() destroys every remaining window*/});
 
 		SOULKAN_NAMESPACE::Instance instance(true);
-		dq.push([&]() { instance.destroy(); });
 
 		vk::SurfaceKHR surface = instance.surface(window);
-		dq.push([&]() { instance.vk().destroySurfaceKHR(surface); });
 
 		vk::PhysicalDevice physicalDevice = instance.best();
 
 		SOULKAN_NAMESPACE::Device device(physicalDevice, window, surface);
-		dq.push([&]() { device.destroy(); });
 
 		SOULKAN_NAMESPACE::Allocator allocator(instance, device);
-		dq.push([&]() { allocator.destroy(); });
 
 		SOULKAN_NAMESPACE::Swapchain swapchain(device);
-		dq.push([&]() { swapchain.destroy(); });
 
 		SOULKAN_NAMESPACE::DepthImage depthImage(device, allocator, swapchain.extent());
-		dq.push([&]() { depthImage.destroy(); });
 
 		SOULKAN_NAMESPACE::CommandPool graphicsCommandPool(device, device.queueIndex(SOULKAN_NAMESPACE::QueueFamilyCapability::GRAPHICS));
-		dq.push([&]() { graphicsCommandPool.destroy(); });
 
 		SOULKAN_NAMESPACE::CommandBuffer commandBuffer = graphicsCommandPool.allocate();
 		SOULKAN_NAMESPACE::Queue graphicsQueue = device.queue(SOULKAN_NAMESPACE::QueueFamilyCapability::GRAPHICS, 0);
@@ -1925,20 +2024,16 @@ namespace SOULKAN_TEST_NAMESPACE
 		//std::vector<SOULKAN_NAMESPACE::Vertex> triangleMesh = SOULKAN_NAMESPACE::Vertex::triangleMesh();
 		std::vector<SOULKAN_NAMESPACE::Vertex> mesh = SOULKAN_NAMESPACE::Vertex::objMesh("monkey.obj");
 
-		//TODO:Try to use buffer to store mvp matrix (storage buffer or uniform buffer)
 
 		SOULKAN_NAMESPACE::Buffer meshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, mesh.size()*sizeof(SOULKAN_NAMESPACE::Vertex));
-		dq.push([&]() { meshBuffer.destroy(); });
 
 		meshBuffer.upload(mesh.data(), mesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
 
 		//SOULKAN_NAMESPACE::Buffer triangleMeshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
-		//dq.push([&]() { triangleMeshBuffer.destroy(); });
 
 		//triangleMeshBuffer.upload(triangleMesh.data(), triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
 
 		SOULKAN_NAMESPACE::Buffer meshMatrixBuffer(device, allocator, vk::BufferUsageFlagBits::eUniformBuffer, sizeof(glm::mat4));
-		dq.push([&]() { meshMatrixBuffer.destroy(); });
 		
 		glm::mat4 identityMat = glm::mat4(1.f);
 		meshMatrixBuffer.upload(&identityMat, sizeof(identityMat));
@@ -1947,31 +2042,22 @@ namespace SOULKAN_TEST_NAMESPACE
 		std::vector<vk::DeviceAddress> bufferAddresses1{ meshBuffer.address(), meshMatrixBuffer.address() };
 		//std::vector<vk::DeviceAddress> bufferAddresses2{ triangleMeshBuffer.address(), meshMatrixBuffer.address() };
 
-		vk::Fence renderFence = device.createFence();
-		dq.push([&]() { device.vk().destroyFence(renderFence); });
-
-		vk::Semaphore presentSemaphore = device.createSemaphore();
-		dq.push([&]() { device.vk().destroySemaphore(presentSemaphore); });
-
-		vk::Semaphore renderSemaphore = device.createSemaphore();
-		dq.push([&]() { device.vk().destroySemaphore(renderSemaphore); });
+		SOULKAN_NAMESPACE::Fence renderFence(device);
+		SOULKAN_NAMESPACE::Semaphore presentSemaphore(device);
+		SOULKAN_NAMESPACE::Semaphore renderSemaphore(device);
 
 		SOULKAN_NAMESPACE::Shader vertShader(device, "triangle.vert", vk::ShaderStageFlagBits::eVertex);
-		dq.push([&]() { vertShader.destroy(); });
 
 		SOULKAN_NAMESPACE::Shader fragShader(device, "triangle.frag", vk::ShaderStageFlagBits::eFragment);
-		dq.push([&]() { fragShader.destroy(); });
 
 
 		SOULKAN_NAMESPACE::vec_ref<SOULKAN_NAMESPACE::Shader> shaders{ vertShader, fragShader };
 
 		SOULKAN_NAMESPACE::GraphicsPipeline solidPipelineTmp(device);
 		SOULKAN_NAMESPACE::GraphicsPipeline solidPipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eFill, swapchain.extent(), swapchain.imageFormat());
-		dq.push([&]() { solidPipeline.destroy(); });
 		
 		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipelineTmp(device);
 		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eLine, swapchain.extent(), swapchain.imageFormat());
-		dq.push([&]() { wireframePipeline.destroy(); });
 
 		vk::Pipeline boundPipeline = solidPipeline.vk();
 		vk::PipelineLayout boundPipelineLayout = solidPipeline.layout();
@@ -2142,8 +2228,7 @@ namespace SOULKAN_TEST_NAMESPACE
 
 			commandBuffer.end();
 
-			graphicsQueue.submit(presentSemaphore, renderSemaphore,
-				                 commandBuffer, renderFence);
+			graphicsQueue.submit(commandBuffer, presentSemaphore, renderSemaphore, renderFence);
 
 			graphicsQueue.present(swapchain, renderSemaphore, imageIndex);
 
@@ -2152,7 +2237,7 @@ namespace SOULKAN_TEST_NAMESPACE
 
 		device.waitFence(renderFence);
 
-		dq.flush();
+		//dq.flush();
 	}
 }
 #endif
