@@ -93,8 +93,8 @@ namespace SOULKAN_NAMESPACE
 
 
 	protected:
-		bool manual = false;
-		bool destroyed = false;
+		bool manual_ = false;
+		bool destroyed_ = false;
 	};
 
 	/*---------------------UTILS---------------------*/
@@ -124,6 +124,9 @@ namespace SOULKAN_NAMESPACE
 
 	template<class T>
 	using vec_ref = std::vector<std::reference_wrapper<T>>;
+
+	template<class T>
+	using ref = std::reference_wrapper<T>;
 	/*---------------------GLFW---------------------*/
 	class Window : Destroyable
 	{
@@ -175,17 +178,21 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy() 
 		{ 
-			if (destroyed) { return; }
+			if (destroyed_) { return; }
 			if (window_ != nullptr) 
 			{ 
 				glfwDestroyWindow(window_); 
 				window_ = nullptr; /*TODO:Check if setting to nullptr is redundant*/ 
 			} 
-			destroyed = true;
+			destroyed_ = true;
 		}
 
-		//TODO:Check if it should be kept
-		~Window() { destroy(); }
+		~Window() 
+		{ 
+			if (destroyed_) { return; }
+			destroy();
+			destroyed_ = true;
+		}
 
 		void rename(std::string newTitle) 
 		{ 
@@ -297,6 +304,8 @@ namespace SOULKAN_NAMESPACE
 
 			appInfo_ = other.appInfo_;
 			other.appInfo_ = vk::ApplicationInfo{};
+
+			return *this;
 		}
 
 		//No copy constructor/assignment
@@ -305,17 +314,17 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
+			if (destroyed_) { return; }
+			instance_.destroySurfaceKHR(surface_);
 			auto dynamicLoader = vk::DispatchLoaderDynamic(instance_, vkGetInstanceProcAddr);
 			instance_.destroyDebugUtilsMessengerEXT(debugMessenger_, nullptr, dynamicLoader);
 			instance_.destroy();
+			destroyed_ = true;
 		}
 
 		~Instance()
 		{
-			instance_.destroySurfaceKHR(surface_);
 			destroy();
-			destroyed = true;
 		}
 
 		vk::SurfaceKHR surface(Window& window)
@@ -478,8 +487,28 @@ namespace SOULKAN_NAMESPACE
 			device_(device), queue_(queue), family_(family), index_(index) {}
 
 		//TODO:Implement move constructors
-		Queue(Queue&& other) = delete;
-		Queue& operator=(Queue&& other) = delete;
+		Queue(Queue&& other) noexcept: device_(other.device_), queue_(other.queue_), family_(other.family_), index_(other.index_)
+		{
+			other.queue_ = vk::Queue(nullptr);
+
+			other.family_ = QueueFamilyCapability::COUNT; //Debug value to indicate that queue is no longer viable
+
+			other.index_ = 0;
+		}
+
+		Queue& operator=(Queue&& other) noexcept
+		{
+			device_ = other.device_;
+			
+			queue_ = other.queue_;
+			other.queue_ = vk::Queue(nullptr);
+
+			family_ = other.family_;
+			other.family_ = QueueFamilyCapability::COUNT;
+
+			index_ = other.index_;
+			other.index_ = 0;
+		}
 
 		//No copy constructors
 		Queue(Queue& other) = delete;
@@ -491,7 +520,7 @@ namespace SOULKAN_NAMESPACE
 
 		uint32_t index() const { return index_; }
 	private:
-		Device& device_;
+		ref<Device> device_;
 		vk::Queue queue_;
 		QueueFamilyCapability family_;
 		uint32_t index_;
@@ -501,7 +530,7 @@ namespace SOULKAN_NAMESPACE
 	class Device : Destroyable
 	{
 	public:
-		Device(vk::PhysicalDevice physicalDevice, Window& window, vk::SurfaceKHR surface) :
+		Device(vk::PhysicalDevice physicalDevice, ref<Window> window, vk::SurfaceKHR surface) :
 			physicalDevice_(physicalDevice), window_(window), surface_(surface)
 		{
 			//Queue families
@@ -558,8 +587,52 @@ namespace SOULKAN_NAMESPACE
 		}
 
 		//TODO:Implement move constructors
-		Device(Device&& other) = delete;
-		Device& operator=(Device&& other) = delete;
+		Device(Device&& other) noexcept : device_(other.device_), window_(other.window_), surface_(other.surface_),
+			queueFamilies_(other.queueFamilies_), physicalDevice_(physicalDevice_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.device_ = vk::Device(nullptr);
+			other.surface_ = vk::SurfaceKHR(nullptr);
+			other.queueFamilies_ = {};
+			other.enabledExtensions_ = {};
+			other.physicalDevice_ = vk::PhysicalDevice(nullptr);
+			other.supportedExtensions_ = {};
+		}
+		Device& operator=(Device&& other) noexcept
+		{
+			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			device_ = other.device_;
+			other.device_ = vk::Device(nullptr);
+
+			surface_ = other.surface_;
+			other.surface_ = vk::SurfaceKHR(nullptr);
+
+			queueFamilies_ = other.queueFamilies_;
+			other.queueFamilies_ = {};
+
+			enabledExtensions_ = other.enabledExtensions_;
+			other.enabledExtensions_ = {};
+
+			physicalDevice_ = other.physicalDevice_;
+			other.physicalDevice_ = vk::PhysicalDevice(nullptr);
+
+			supportedExtensions_ = other.supportedExtensions_;
+			other.supportedExtensions_ = {};
+
+			return *this;
+		}
 
 		//No copy constructors
 		Device(Device& other) = delete;
@@ -567,9 +640,9 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
+			if (destroyed_) { return; }
 			device_.destroy();
-			destroyed = true;
+			destroyed_ = true;
 		}
 
 		~Device()
@@ -589,7 +662,7 @@ namespace SOULKAN_NAMESPACE
 			auto surfaceCapabilities = physicalDevice_.getSurfaceCapabilitiesKHR(surface_);
 
 			int width, height = 0;
-			glfwGetFramebufferSize(window_.window(), &width, &height);
+			glfwGetFramebufferSize(window_.get().window(), &width, &height);
 
 			vk::Extent2D extent = { static_cast<uint32_t>(width), static_cast<uint32_t>(height) };
 
@@ -792,7 +865,7 @@ namespace SOULKAN_NAMESPACE
 
 	private:
 		vk::Device device_ = nullptr;
-		Window& window_; //TODO:Unsure about this
+		ref<Window> window_; //TODO:Unsure about this
 		vk::SurfaceKHR surface_ = nullptr;
 
 		std::array<uint32_t, INDEX(QueueFamilyCapability::COUNT)> queueFamilies_
@@ -814,20 +887,46 @@ namespace SOULKAN_NAMESPACE
 	class Fence : Destroyable
 	{
 	public:
-		Fence(Device& device) : device_(device)
+		Fence(ref<Device> device) : device_(device)
 		{
 			vk::FenceCreateInfo createInfo = {};
 			createInfo.flags = vk::FenceCreateFlagBits::eSignaled; //INFO:Fence is created as signaled so that the first call to waitForFences() returns instantly
 
 			vk::Fence fence;
-			VK_CHECK(device_.vk().createFence(&createInfo, nullptr, &fence));
+			VK_CHECK(device_.get().vk().createFence(&createInfo, nullptr, &fence));
 			
 			fence_ = fence;
 		}
 
 		//TODO:Implement move constructors
-		Fence(Fence&& other) = delete;
-		Fence& operator=(Fence&& other) = delete;
+		Fence(Fence&& other) noexcept : device_(other.device_), fence_(other.fence_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.fence_ = vk::Fence(nullptr);
+		}
+
+		Fence& operator=(Fence&& other) noexcept
+		{
+			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			device_ = other.device_;
+
+			fence_ = other.fence_;
+			other.fence_ = vk::Fence(nullptr);
+
+			return *this;
+		}
 
 		//No copy constructors
 		Fence(Fence& other) = delete;
@@ -835,9 +934,9 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
-			device_.vk().destroyFence(fence_);
-			destroyed = true;
+			if (destroyed_) { return; }
+			device_.get().vk().destroyFence(fence_);
+			destroyed_ = true;
 		}
 
 		~Fence()
@@ -850,7 +949,7 @@ namespace SOULKAN_NAMESPACE
 			return fence_;
 		}
 	private:
-		Device& device_;
+		ref<Device> device_;
 		vk::Fence fence_{};
 	};
 
@@ -858,16 +957,40 @@ namespace SOULKAN_NAMESPACE
 	class Semaphore : Destroyable
 	{
 	public:
-		Semaphore(Device& device) : device_(device)
+		Semaphore(ref<Device> device) : device_(device)
 		{
 			vk::SemaphoreCreateInfo createInfo = {};
 
-			VK_CHECK(device_.vk().createSemaphore(&createInfo, nullptr, &semaphore_));
+			VK_CHECK(device_.get().vk().createSemaphore(&createInfo, nullptr, &semaphore_));
 		}
 
 		//TODO:Implement move constructors
-		Semaphore(Semaphore&& other) = delete;
-		Semaphore& operator=(Semaphore&& other) = delete;
+		Semaphore(Semaphore&& other) noexcept : device_(other.device_), semaphore_(other.semaphore_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.semaphore_ = vk::Semaphore(nullptr);
+		}
+
+		Semaphore& operator=(Semaphore&& other) noexcept
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			device_ = other.device_;
+
+			semaphore_ = other.semaphore_;
+			other.semaphore_ = vk::Semaphore(nullptr);
+
+			return *this;
+		}
 
 		//No copy constructors
 		Semaphore(Semaphore& other) = delete;
@@ -875,9 +998,9 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
-			device_.vk().destroySemaphore(semaphore_);
-			destroyed = true;
+			if (destroyed_) { return; }
+			device_.get().vk().destroySemaphore(semaphore_);
+			destroyed_ = true;
 		}
 
 		~Semaphore()
@@ -890,7 +1013,7 @@ namespace SOULKAN_NAMESPACE
 			return semaphore_;
 		}
 	private:
-		Device& device_;
+		ref<Device> device_;
 		vk::Semaphore semaphore_;
 	};
 
@@ -912,10 +1035,10 @@ namespace SOULKAN_NAMESPACE
 	{
 	public:
 
-		Swapchain(Device& device) : device_(device)
+		Swapchain(ref<Device> device) : device_(device)
 		{
-			auto surface = device_.surface();
-			auto surfaceCapabilities = device_.physicalDevice().getSurfaceCapabilitiesKHR(surface);
+			auto surface = device_.get().surface();
+			auto surfaceCapabilities = device_.get().physicalDevice().getSurfaceCapabilitiesKHR(surface);
 
 			//Image Count
 			uint32_t imageCount = surfaceCapabilities.minImageCount + 1;
@@ -925,19 +1048,19 @@ namespace SOULKAN_NAMESPACE
 			}
 
 			//Extent
-			extent_ = device_.extent();
+			extent_ = device_.get().extent();
 
 			//Concurrency
 			auto sharingMode = vk::SharingMode::eConcurrent; //TODO:Defaulting to concurrent, read up on it later on
 
 			//SurfaceFormat
-			surfaceFormat_ = device_.surfaceFormat();
+			surfaceFormat_ = device_.get().surfaceFormat();
 
 			//PresentMode
-			presentMode_ = device_.presentMode();
+			presentMode_ = device_.get().presentMode();
 
 			//Queues
-			auto queues = device_.queueConcentrate();
+			auto queues = device_.get().queueConcentrate();
 
 			auto createInfo = vk::SwapchainCreateInfoKHR(vk::SwapchainCreateFlagsKHR());
 
@@ -965,13 +1088,60 @@ namespace SOULKAN_NAMESPACE
 			createInfo.clipped = VK_TRUE; //Allows vulkan implementation to discard rendering operations on regions of the surface not visible
 			createInfo.oldSwapchain = vk::SwapchainKHR(nullptr); 
 
-			VK_CHECK(device_.vk().createSwapchainKHR(&createInfo, nullptr, &swapchain_));
+			VK_CHECK(device_.get().vk().createSwapchainKHR(&createInfo, nullptr, &swapchain_));
 
 		}
 
 		//TODO:Handle move constructors/assignements
-		Swapchain(Swapchain&& swapchain) = delete;
-		Swapchain& operator=(Swapchain& other) = delete;
+		Swapchain(Swapchain&& other) noexcept :
+			device_(other.device_), swapchain_(other.swapchain_), surfaceFormat_(other.surfaceFormat_),
+			presentMode_(other.presentMode_), extent_(other.extent_), images_(other.images_),
+			imageViews_(other.imageViews_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.swapchain_ = vk::SwapchainKHR(nullptr);
+			other.surfaceFormat_ = vk::SurfaceFormatKHR();
+			other.presentMode_ = vk::PresentModeKHR();
+			other.extent_ = vk::Extent2D{0,0};
+			other.images_ = {};
+			other.imageViews_ = {};
+		}
+
+		Swapchain& operator=(Swapchain& other) noexcept
+		{
+			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			swapchain_ = other.swapchain_;
+			other.swapchain_ = vk::SwapchainKHR(nullptr);
+
+			surfaceFormat_ = other.surfaceFormat_;
+			other.surfaceFormat_ = vk::SurfaceFormatKHR();
+
+			presentMode_ = other.presentMode_;
+			other.presentMode_ = vk::PresentModeKHR();
+
+			extent_ = other.extent_;
+			other.extent_ = vk::Extent2D{ 0,0 };
+
+			images_ = other.images_;
+			other.images_ = {};
+
+			imageViews_ = other.imageViews_;
+			other.imageViews_ = {};
+
+			return *this;
+		}
 
 		Swapchain(Device&& device) = delete; //INFO:Prevents rvalue binding, otherwise the class would accept temporaries
 		Swapchain& operator=(Device& other) = delete;
@@ -985,10 +1155,10 @@ namespace SOULKAN_NAMESPACE
 			}
 
 			uint32_t imageCount = 0;
-			VK_CHECK(device_.vk().getSwapchainImagesKHR(swapchain_, &imageCount, nullptr));
+			VK_CHECK(device_.get().vk().getSwapchainImagesKHR(swapchain_, &imageCount, nullptr));
 			images_.resize(imageCount);
 
-			VK_CHECK(device_.vk().getSwapchainImagesKHR(swapchain_, &imageCount, images_.data()));
+			VK_CHECK(device_.get().vk().getSwapchainImagesKHR(swapchain_, &imageCount, images_.data()));
 
 			return images_;
 		}
@@ -1019,7 +1189,7 @@ namespace SOULKAN_NAMESPACE
 				imageViewCreateInfo.subresourceRange.layerCount = 1;
 
 				vk::ImageView imageView;
-				VK_CHECK(device_.vk().createImageView(&imageViewCreateInfo, nullptr, &imageView));
+				VK_CHECK(device_.get().vk().createImageView(&imageViewCreateInfo, nullptr, &imageView));
 
 				imageViews_.push_back(imageView);
 			}
@@ -1030,21 +1200,21 @@ namespace SOULKAN_NAMESPACE
 		uint32_t nextImage(Semaphore &signalSemaphore)
 		{
 			uint32_t imageIndex;
-			VK_CHECK(device_.vk().acquireNextImageKHR(swapchain_, 1'000'000, signalSemaphore.vk(), nullptr, &imageIndex));
+			VK_CHECK(device_.get().vk().acquireNextImageKHR(swapchain_, 1'000'000, signalSemaphore.vk(), nullptr, &imageIndex));
 
 			return imageIndex;
 		}
 
 		void destroy()
 		{
-			if (destroyed) { return; }
-			device_.vk().destroySwapchainKHR(swapchain_);
+			if (destroyed_) { return; }
+			device_.get().vk().destroySwapchainKHR(swapchain_);
 
 			for (auto& i : imageViews_)
 			{
-				device_.vk().destroyImageView(i);
+				device_.get().vk().destroyImageView(i);
 			}
-			destroyed = true;
+			destroyed_ = true;
 		}
 
 		~Swapchain()
@@ -1058,7 +1228,7 @@ namespace SOULKAN_NAMESPACE
 		vk::Format imageFormat() const  { return surfaceFormat_.format; }
 		vk::PresentModeKHR presentMode() const  { return presentMode_; }
 	private:
-		Device& device_;
+		ref<Device> device_;
 		vk::SwapchainKHR swapchain_{};
 
 		vk::SurfaceFormatKHR surfaceFormat_{};
@@ -1081,8 +1251,18 @@ namespace SOULKAN_NAMESPACE
 		CommandBuffer(CommandPool& commandPool, vk::CommandBuffer commandBuffer) : commandPool_(commandPool), commandBuffer_(commandBuffer) {}
 
 		//TODO:Implement move constructors
-		/*CommandBuffer(CommandBuffer&& other) = delete;
-		CommandBuffer& operator=(CommandBuffer&& other) = delete;*/
+		CommandBuffer(CommandBuffer&& other) noexcept : commandPool_(other.commandPool_), commandBuffer_(other.commandBuffer_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.commandBuffer_ = vk::CommandBuffer(nullptr);
+		}
+
+		CommandBuffer& operator=(CommandBuffer&& other) = delete;
 
 		//No copy constructors
 		CommandBuffer(CommandBuffer& other) = delete;
@@ -1183,10 +1363,9 @@ namespace SOULKAN_NAMESPACE
 
 		vk::CommandBuffer vk() const  { return commandBuffer_; }
 
-		const CommandPool& commandPool_;
-
 	private:
 		vk::CommandBuffer commandBuffer_;
+		ref<CommandPool> commandPool_;
 	};
 
 	//COMMAND POOL
@@ -1203,7 +1382,7 @@ namespace SOULKAN_NAMESPACE
 			
 			createInfo.pNext = nullptr;
 
-			VK_CHECK(device_.vk().createCommandPool(&createInfo, nullptr, &pool_));
+			VK_CHECK(device_.get().vk().createCommandPool(&createInfo, nullptr, &pool_));
 		}
 
 		//Allocating only one command buffer for now since it is not trivial returning a vector of non copyable-non moveable objects
@@ -1218,7 +1397,7 @@ namespace SOULKAN_NAMESPACE
 
 			allocateInfo.pNext = nullptr;
 
-			VK_CHECK(device_.vk().allocateCommandBuffers(&allocateInfo, &vkBuffer)); //
+			VK_CHECK(device_.get().vk().allocateCommandBuffers(&allocateInfo, &vkBuffer)); //
 
 			return CommandBuffer(*this, vkBuffer);
 		}
@@ -1226,8 +1405,36 @@ namespace SOULKAN_NAMESPACE
 
 
 		//TODO:Implement move constructors
-		CommandPool(CommandPool&& other) = delete;
-		CommandPool& operator=(CommandPool&& other) = delete;
+		CommandPool(CommandPool&& other) noexcept : device_(other.device_), pool_(other.pool_), queueFamilyIndex_(other.queueFamilyIndex_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.pool_ = vk::CommandPool(nullptr);
+
+		}
+		CommandPool& operator=(CommandPool&& other) noexcept
+		{
+			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			device_ = other.device_;
+
+			pool_ = other.pool_;
+			other.pool_ = vk::CommandPool(nullptr);
+
+			queueFamilyIndex_ = other.queueFamilyIndex_;
+
+			return *this;
+		}
 
 		//No copy constructors
 		CommandPool(CommandPool& other) = delete;
@@ -1235,9 +1442,9 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
-			device_.vk().destroyCommandPool(pool_);
-			destroyed = true;
+			if (destroyed_) { return; }
+			device_.get().vk().destroyCommandPool(pool_);
+			destroyed_ = true;
 		}
 
 		~CommandPool()
@@ -1248,10 +1455,10 @@ namespace SOULKAN_NAMESPACE
 		vk::CommandPool vk() const { return pool_; }
 		uint32_t index() const { return queueFamilyIndex_; }
 
-		Device& device() const { return device_; }
+		ref<Device> device() const { return device_; }
 
 	private:
-		Device& device_;
+		ref<Device> device_;
 		vk::CommandPool pool_;
 		uint32_t queueFamilyIndex_;
 
@@ -1261,8 +1468,8 @@ namespace SOULKAN_NAMESPACE
 	//Returns true if command buffer was allocated from a graphics capable command pool
 	bool CommandBuffer::graphics() const
 	{
-		return (commandPool_.index() == commandPool_.device().queueFamilies()[INDEX(QueueFamilyCapability::GENERAL)]) ||
-			(commandPool_.index() == commandPool_.device().queueFamilies()[INDEX(QueueFamilyCapability::GRAPHICS)]);
+		return (commandPool_.get().index() == commandPool_.get().device().get().queueFamilies()[INDEX(QueueFamilyCapability::GENERAL)]) ||
+			(commandPool_.get().index() == commandPool_.get().device().get().queueFamilies()[INDEX(QueueFamilyCapability::GRAPHICS)]);
 	}
 
 	//QUEUE
@@ -1311,11 +1518,45 @@ namespace SOULKAN_NAMESPACE
 	class Shader : Destroyable
 	{
 	public:
-		Shader(Device& device, std::string filename, vk::ShaderStageFlagBits shaderStage) : device_(device), filename_(filename), stage_(shaderStage) {}
+		Shader(ref<Device> device, std::string filename, vk::ShaderStageFlagBits shaderStage) : device_(device), filename_(filename), stage_(shaderStage) {}
 
 		//TODO:Implement move constructors
-		Shader(Shader&& other) = delete;
-		Shader& operator=(Shader&& other) = delete;
+		Shader(Shader&& other) noexcept : device_(other.device_), filename_(other.filename_), source_(other.source_),
+			module_(other.module_), stage_(other.stage_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.filename_ = "";
+			other.source_ = "";
+			other.module_ = vk::ShaderModule(nullptr);
+		}
+		Shader& operator=(Shader&& other) noexcept
+		{
+			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			filename_ = other.filename_;
+			other.filename_ = "";
+
+			source_ = other.source_;
+			other.source_ = "";
+
+			module_ = other.module_;
+			other.module_ = vk::ShaderModule(nullptr);
+
+			stage_ = other.stage_;
+
+			return *this;
+		}
 
 		//No copy constructors
 		Shader(Shader& other) = delete;
@@ -1323,14 +1564,14 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
-			device_.vk().destroyShaderModule(module_);
-			destroyed = true;
+			if (destroyed_) { return; }
+			device_.get().vk().destroyShaderModule(module_);
+			destroyed_ = true;
 		}
 
 		~Shader()
 		{
-			device_.vk().destroyShaderModule(module_);
+			device_.get().vk().destroyShaderModule(module_);
 		}
 		
 		//INFO:Expensive, reads entire file
@@ -1398,7 +1639,7 @@ namespace SOULKAN_NAMESPACE
 			createInfo.codeSize = spirv.size()*sizeof(uint32_t);
 			createInfo.pCode = spirv.data();
 
-			VK_CHECK(device_.vk().createShaderModule(&createInfo, nullptr, &module_));
+			VK_CHECK(device_.get().vk().createShaderModule(&createInfo, nullptr, &module_));
 			compiled = true;
 
 			return module_;
@@ -1409,7 +1650,7 @@ namespace SOULKAN_NAMESPACE
 			return stage_;
 		}
 	private:
-		Device& device_;
+		ref<Device> device_;
 		std::string filename_{};
 		std::string source_{};
 		vk::ShaderModule module_;
@@ -1429,9 +1670,9 @@ namespace SOULKAN_NAMESPACE
 	class GraphicsPipeline : Destroyable
 	{
 	public:
-		GraphicsPipeline(Device &device) : device_(device) {}
+		GraphicsPipeline(ref<Device> device) : device_(device) {}
 		//INFO:Very expensive, might compile shader if not already compiled, lots of structs, ...
-		GraphicsPipeline(Device& device, vec_ref<Shader> shaders, vk::PrimitiveTopology topology, vk::PolygonMode polygonMode, vk::Extent2D extent, vk::Format imageFormat) :
+		GraphicsPipeline(ref<Device> device, vec_ref<Shader> shaders, vk::PrimitiveTopology topology, vk::PolygonMode polygonMode, vk::Extent2D extent, vk::Format imageFormat) :
 			device_(device), shaders_(shaders), topology_(topology), polygonMode_(polygonMode), extent_(extent), imageFormat_(imageFormat)
 		{
 			//Shader stages
@@ -1522,7 +1763,7 @@ namespace SOULKAN_NAMESPACE
 
 			pipelineLayout.pushConstantRangeCount = 1;
 			pipelineLayout.pPushConstantRanges = &bdaPushConstants;
-			VK_CHECK(device_.vk().createPipelineLayout(&pipelineLayout, nullptr, &pipelineLayout_));
+			VK_CHECK(device_.get().vk().createPipelineLayout(&pipelineLayout, nullptr, &pipelineLayout_));
 
 			//Pipeline rendering
 			vk::PipelineRenderingCreateInfo rendering = {};
@@ -1553,7 +1794,7 @@ namespace SOULKAN_NAMESPACE
 
 			createInfo.pNext = &rendering;
 
-			auto result = device_.vk().createGraphicsPipeline(nullptr, createInfo);
+			auto result = device_.get().vk().createGraphicsPipeline(nullptr, createInfo);
 			VK_CHECK(result.result);
 
 			pipeline_ = result.value;
@@ -1564,6 +1805,12 @@ namespace SOULKAN_NAMESPACE
 		GraphicsPipeline& operator=(GraphicsPipeline&& other) noexcept
 		{
 			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
 
 			pipeline_ = other.pipeline_;
 			other.pipeline_ = nullptr;
@@ -1590,10 +1837,10 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
-			device_.vk().destroyPipelineLayout(pipelineLayout_);
-			device_.vk().destroyPipeline(pipeline_);
-			destroyed = true;
+			if (destroyed_) { return; }
+			device_.get().vk().destroyPipelineLayout(pipelineLayout_);
+			device_.get().vk().destroyPipeline(pipeline_);
+			destroyed_ = true;
 		}
 
 		~GraphicsPipeline()
@@ -1608,7 +1855,7 @@ namespace SOULKAN_NAMESPACE
 		vk::Pipeline pipeline_{};
 		vk::PipelineLayout pipelineLayout_{};
 
-		Device& device_;
+		ref<Device> device_;
 
 		vec_ref<Shader> shaders_{};
 
@@ -1621,21 +1868,46 @@ namespace SOULKAN_NAMESPACE
 	class Allocator : Destroyable
 	{
 	public:
-		Allocator(Instance& instance, Device& device) : instance_(instance), device_(device)
+		Allocator(ref<Instance> instance, ref<Device> device) : instance_(instance), device_(device)
 		{
 			VmaAllocatorCreateInfo createInfo = {};
 
-			createInfo.physicalDevice = device_.physicalDevice();
-			createInfo.device = device_.vk();
-			createInfo.instance = instance_.vk();
+			createInfo.physicalDevice = device_.get().physicalDevice();
+			createInfo.device = device_.get().vk();
+			createInfo.instance = instance_.get().vk();
 			createInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
 			VK_CHECK(vk::Result(vmaCreateAllocator(&createInfo, &allocator_)));
 		}
 
 		//TODO:Implement move constructors
-		Allocator(Allocator&& other) = delete;
-		Allocator& operator=(Allocator&& other) = delete;
+		Allocator(Allocator&& other) noexcept : allocator_(other.allocator_), instance_(other.instance_), device_(other.device_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.allocator_ = VmaAllocator(nullptr);
+		}
+		Allocator& operator=(Allocator&& other) noexcept
+		{
+			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			allocator_ = other.allocator_;
+			other.allocator_ = VmaAllocator(nullptr);
+
+			instance_ = other.instance_;
+
+			device_ = other.device_;
+		}
 
 		//No copy constructors
 		Allocator(Allocator& other) = delete;
@@ -1643,9 +1915,9 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
+			if (destroyed_) { return; }
 			vmaDestroyAllocator(allocator_);
-			destroyed = true;
+			destroyed_ = true;
 		}
 
 		~Allocator()
@@ -1658,14 +1930,14 @@ namespace SOULKAN_NAMESPACE
 	private:
 		VmaAllocator allocator_{};
 
-		Instance& instance_;
-		Device& device_;
+		ref<Instance> instance_;
+		ref<Device> device_;
 	};
 
 	class Buffer : Destroyable
 	{
 	public:
-		Buffer(Device &device, Allocator& allocator, vk::BufferUsageFlagBits usage, vk::DeviceSize size) : device_(device), allocator_(allocator)
+		Buffer(ref<Device> device, ref<Allocator> allocator, vk::BufferUsageFlagBits usage, vk::DeviceSize size) : device_(device), allocator_(allocator)
 		{
 			vk::BufferCreateInfo createInfo = {};
 
@@ -1680,14 +1952,48 @@ namespace SOULKAN_NAMESPACE
 
 			VkBuffer buffer;
 
-			VK_CHECK(vk::Result(vmaCreateBuffer(allocator_.vma(), &vkCreateInfo, &allocInfo, &buffer, &allocation_, nullptr)));
+			VK_CHECK(vk::Result(vmaCreateBuffer(allocator_.get().vma(), &vkCreateInfo, &allocInfo, &buffer, &allocation_, nullptr)));
 
 			buffer_ = vk::Buffer(buffer);
 		}
 
 		//TODO:Implement move constructors
-		Buffer(Buffer&& other) = delete;
-		Buffer& operator=(Buffer&& other) = delete;
+		Buffer(Buffer&& other) noexcept : device_(other.device_), allocator_(other.allocator_), buffer_(other.buffer_),
+			allocation_(other.allocation_), address_(other.address_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.buffer_ = vk::Buffer(nullptr);
+			other.allocation_ = VmaAllocation(nullptr);
+			other.address_ = 0;
+		}
+		Buffer& operator=(Buffer&& other) noexcept
+		{
+			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			device_ = other.device_;
+
+			allocator_ = other.allocator_;
+
+			buffer_ = other.buffer_;
+			other.buffer_ = vk::Buffer(nullptr);
+
+			allocation_ = other.allocation_;
+			other.allocation_ = VmaAllocation(nullptr);
+
+			address_ = other.address_;
+			other.address_ = 0;
+		}
 
 		//No copy constructors
 		Buffer(Buffer& other) = delete;
@@ -1696,9 +2002,9 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
-			vmaDestroyBuffer(allocator_.vma(), buffer_, allocation_);
-			destroyed = true;
+			if (destroyed_) { return; }
+			vmaDestroyBuffer(allocator_.get().vma(), buffer_, allocation_);
+			destroyed_ = true;
 		}
 
 		~Buffer()
@@ -1709,11 +2015,11 @@ namespace SOULKAN_NAMESPACE
 		void upload(void *data, size_t size)
 		{
 			void* dst;
-			vmaMapMemory(allocator_.vma(), allocation_, &dst);
+			vmaMapMemory(allocator_.get().vma(), allocation_, &dst);
 
 			memcpy(dst, data, size);
 
-			vmaUnmapMemory(allocator_.vma(), allocation_);
+			vmaUnmapMemory(allocator_.get().vma(), allocation_);
 		}
 
 		vk::DeviceAddress address()
@@ -1723,13 +2029,13 @@ namespace SOULKAN_NAMESPACE
 			vk::BufferDeviceAddressInfo addressInfo = {};
 			addressInfo.buffer = buffer_;
 
-			address_ = device_.vk().getBufferAddress(&addressInfo);
+			address_ = device_.get().vk().getBufferAddress(&addressInfo);
 			return address_;
 		}
 
 	private:
-		Device& device_;
-		Allocator& allocator_;
+		ref<Device> device_;
+		ref<Allocator> allocator_;
 
 		vk::Buffer buffer_;
 		VmaAllocation allocation_;
@@ -1740,7 +2046,7 @@ namespace SOULKAN_NAMESPACE
 	class DepthImage : Destroyable
 	{
 	public:
-		DepthImage(Device &device, Allocator &allocator, vk::Extent2D extent) : device_(device), allocator_(allocator)
+		DepthImage(ref<Device> device, ref<Allocator> allocator, vk::Extent2D extent) : device_(device), allocator_(allocator)
 		{
 			vk::Extent3D depthImageExtent = {};
 			depthImageExtent.width = extent.width;
@@ -1768,7 +2074,7 @@ namespace SOULKAN_NAMESPACE
 			allocationCreateInfo.requiredFlags = static_cast<VkMemoryPropertyFlags>(vk::MemoryPropertyFlagBits::eDeviceLocal);//TODO:Not sure about that here
 
 			VkImage vkImage;
-			VK_CHECK(vk::Result(vmaCreateImage(allocator_.vma(), &vkCreateInfo, &allocationCreateInfo, &vkImage, &allocation_, nullptr)));
+			VK_CHECK(vk::Result(vmaCreateImage(allocator_.get().vma(), &vkCreateInfo, &allocationCreateInfo, &vkImage, &allocation_, nullptr)));
 			image_ = vk::Image(vkImage);
 
 			vk::ImageViewCreateInfo viewCreateInfo = {};
@@ -1785,11 +2091,46 @@ namespace SOULKAN_NAMESPACE
 
 			viewCreateInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eDepth;
 
-			VK_CHECK(device_.vk().createImageView(&viewCreateInfo, nullptr, &view_));
+			VK_CHECK(device_.get().vk().createImageView(&viewCreateInfo, nullptr, &view_));
 		}
 		//TODO:Implement move constructors
-		DepthImage(DepthImage&& other) = delete;
-		DepthImage& operator=(DepthImage&& other) = delete;
+		DepthImage(DepthImage&& other) noexcept : image_(other.image_), view_(other.view_), allocation_(other.allocation_),
+			device_(other.device_), allocator_(other.allocator_)
+		{
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			other.image_ = vk::Image(nullptr);
+			other.view_ = vk::ImageView(nullptr);
+			other.allocation_ = VmaAllocation(nullptr);
+
+		}
+		DepthImage& operator=(DepthImage&& other) noexcept
+		{
+			destroy();
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			manual_ = other.manual_;
+			other.manual_ = false;
+
+			image_ = other.image_;
+			other.image_ = vk::Image(nullptr);
+
+			view_ = other.view_;
+			other.view_ = vk::ImageView(nullptr);
+
+			allocation_ = other.allocation_;
+			other.allocation_ = VmaAllocation(nullptr);
+
+			device_ = other.device_;
+
+			allocator_ = other.allocator_;
+		}
 
 		//No copy constructors
 		DepthImage(DepthImage& other) = delete;
@@ -1797,10 +2138,10 @@ namespace SOULKAN_NAMESPACE
 
 		void destroy()
 		{
-			if (destroyed) { return; }
-			device_.vk().destroyImageView(view_);
-			vmaDestroyImage(allocator_.vma(), image_, allocation_);
-			destroyed = true;
+			if (destroyed_) { return; }
+			device_.get().vk().destroyImageView(view_);
+			vmaDestroyImage(allocator_.get().vma(), image_, allocation_);
+			destroyed_ = true;
 		}
 
 		~DepthImage()
@@ -1816,8 +2157,8 @@ namespace SOULKAN_NAMESPACE
 		vk::ImageView view_;
 		VmaAllocation allocation_;
 
-		Device& device_;
-		Allocator& allocator_;
+		ref<Device> device_;
+		ref<Allocator> allocator_;
 	};
 
 	struct Vertex
