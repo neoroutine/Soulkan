@@ -1,5 +1,5 @@
 //we will be using glsl version 4.5 syntax
-#version 450
+#version 460
 #extension GL_KHR_vulkan_glsl : enable
 #extension GL_EXT_buffer_reference : enable
 
@@ -44,9 +44,9 @@ void main()
 
 	//output the position of each vertex
 	//gl_Position = positions[gl_VertexIndex];
-	gl_Position = constants.matrices.meshMatrix * constants.vertices.v[gl_VertexIndex].position;
+	gl_Position = constants.matrices.meshMatrix * constants.vertices.v[gl_BaseInstance + gl_VertexIndex].position;
 
 	//output color according to position
 	//outColor = colors[gl_VertexIndex];
-	outColor = constants.vertices.v[gl_VertexIndex].color;
+	outColor = constants.vertices.v[gl_BaseInstance + gl_VertexIndex].color;
 }

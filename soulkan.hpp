@@ -128,6 +128,7 @@ namespace SOULKAN_NAMESPACE
 
 	template<class T>
 	using ref = std::reference_wrapper<T>;
+
 	/*---------------------GLFW---------------------*/
 	class Window : Destroyable
 	{
@@ -563,6 +564,7 @@ namespace SOULKAN_NAMESPACE
 			vk::PhysicalDeviceFeatures2 features = {};
 
 			vk::PhysicalDeviceVulkan11Features features11 = {};
+			features11.shaderDrawParameters = true;
 
 			vk::PhysicalDeviceVulkan12Features features12 = {};
 			features12.bufferDeviceAddress = true;
@@ -1950,7 +1952,7 @@ namespace SOULKAN_NAMESPACE
 		{
 			vk::BufferCreateInfo createInfo = {};
 
-			createInfo.size = static_cast<vk::DeviceSize>(size);
+			createInfo.size = size;
 			createInfo.usage = usage | vk::BufferUsageFlagBits::eShaderDeviceAddress;
 
 			VkBufferCreateInfo vkCreateInfo = static_cast<VkBufferCreateInfo>(createInfo);
@@ -2022,12 +2024,14 @@ namespace SOULKAN_NAMESPACE
 			destroy();
 		}
 
-		void upload(void *data, size_t size)
+		void upload(void *data, size_t size, uint32_t offset = 0)
 		{
 			void* dst;
 			vmaMapMemory(allocator_.get().vma(), allocation_, &dst);
 
-			memcpy(dst, data, size);
+			char* offsetDst = static_cast<char*>(dst) + offset;//We assume that sizeof(char) = 1
+
+			memcpy(offsetDst, data, size);
 
 			vmaUnmapMemory(allocator_.get().vma(), allocation_);
 		}
@@ -2176,38 +2180,48 @@ namespace SOULKAN_NAMESPACE
 	{
 		glm::vec4 position;
 		glm::vec4 color;
+	};
 
-		static std::vector<Vertex> triangleMesh()
+	class Mesh
+	{
+	public:
+		Mesh(std::string name, std::vector<Vertex> vertices)
+			: name_(name), vertices_(vertices)
 		{
-			Vertex bottomRight{ .position = glm::vec4(1.f, 1.f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f)};
-
-			Vertex bottomLeft{ .position = glm::vec4(-1.f, 1.f, 0.0f,  1.f), .color = glm::vec4(0.f, 1.f, 0.f, 1.f)};
-
-			Vertex top{ .position = glm::vec4(0.f, -1.f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f)};
-
-			return std::vector<Vertex>{bottomRight, bottomLeft, top};
+			
 		}
 
-		static std::vector<Vertex> squareMesh()
+		static Mesh triangleMesh()
+		{
+			Vertex bottomRight{ .position = glm::vec4(1.f, 1.f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
+
+			Vertex bottomLeft{ .position = glm::vec4(-1.f, 1.f, 0.0f,  1.f), .color = glm::vec4(0.f, 1.f, 0.f, 1.f) };
+
+			Vertex top{ .position = glm::vec4(0.f, -1.f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
+
+			return Mesh("triangle", std::vector<Vertex>{bottomRight, bottomLeft, top});
+		}
+
+		static Mesh squareMesh()
 		{
 			Vertex bottomRight{ .position = glm::vec4(0.5f, 0.5f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
 			Vertex bottomLeft{ .position = glm::vec4(-0.5f, 0.5f, 0.0f,  1.f), .color = glm::vec4(0.f, 1.f, 0.f, 1.f) };
-			Vertex topLeft{ .position = glm::vec4(-0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f)};
+			Vertex topLeft{ .position = glm::vec4(-0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
 
 			Vertex topRight{ .position = glm::vec4(0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(1.f, 1.f, 1.f, 1.f) };
 
-			return std::vector<Vertex>{bottomRight, bottomLeft, topLeft,
-									   bottomRight, topLeft, topRight};
+			return Mesh("square", std::vector<Vertex>{bottomRight, bottomLeft, topLeft,
+				bottomRight, topLeft, topRight});
 		}
 
-		static std::vector<Vertex> heartMesh()
+		static Mesh heartMesh()
 		{
 			Vertex center{ .position = glm::vec4(0.0f, 0.0f, 0.0f, 1.f), .color = glm::vec4(1.f, 1.f, 1.f, 1.f) };
 
 			Vertex la{ .position = glm::vec4(-0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
 			Vertex lb{ .position = glm::vec4(-0.25f, -0.5f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
 			Vertex lc{ .position = glm::vec4(-0.5f, 0.0f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
-			
+
 			Vertex down{ .position = glm::vec4(0.f, 1.f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
 
 			Vertex ra{ .position = glm::vec4(0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
@@ -2215,15 +2229,15 @@ namespace SOULKAN_NAMESPACE
 			Vertex rc{ .position = glm::vec4(0.5f, 0.0f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
 
 
-			return std::vector<Vertex>{center, la, lb,//Left half
-									   center, lc, la,
-									   center, down, lc,
-									   center, ra, rb,//Right half
-									   center, rc, ra,
-								       center, down, rc};
+			return Mesh("heart", std::vector<Vertex>{center, la, lb,//Left half
+				center, lc, la,
+				center, down, lc,
+				center, ra, rb,//Right half
+				center, rc, ra,
+				center, down, rc});
 		}
 
-		static std::vector<Vertex> objMesh(std::string filename)
+		static Mesh objMesh(std::string filename)
 		{
 			tinyobj::ObjReaderConfig readerConfig;
 
@@ -2273,7 +2287,7 @@ namespace SOULKAN_NAMESPACE
 						vertex.position.y = vy;
 						vertex.position.z = vz;
 						vertex.position.w = 1.f;
-						
+
 						vertex.color.x = 1.f;
 						vertex.color.y = 0.f;
 						vertex.color.z = 1.f;
@@ -2297,8 +2311,84 @@ namespace SOULKAN_NAMESPACE
 				}
 			}
 
-			return vertices;
+			return Mesh(filename, vertices);
 		}
+
+		std::string name()
+		{
+			return name_;
+		}
+
+		uint32_t size()
+		{
+			return vertices_.size();
+		}
+
+		void* data()
+		{
+			return vertices_.data();
+		}
+	private:
+		std::string name_;
+		std::vector<Vertex> vertices_;
+	};
+	//Protected buffer so end user cannot directly call VertexBuffer.upload() and mess things up
+	class VertexBuffer : protected Buffer
+	{
+	public:
+		VertexBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize size) :
+			Buffer(device, allocator, vk::BufferUsageFlagBits::eStorageBuffer, size)
+		{
+			voids[0] = size;//Whole buffer is free when first created
+		}
+
+		std::pair<uint64_t, uint64_t> add(Mesh& mesh)
+		{
+			uint64_t meshSize = mesh.size() * sizeof(Vertex);
+			uint64_t selectedOffset = std::numeric_limits<uint32_t>::max();
+;
+
+			for (auto& [key, val] : voids)
+			{
+				if (val > meshSize)//Enough space to store mesh at offset key
+				{
+					selectedOffset = key;
+					break;
+				}
+			}
+
+			if (selectedOffset == std::numeric_limits<uint32_t>::max())
+			{
+				return std::make_pair(0, 0);
+			}
+
+			//Get free space at selected offset, delete offset, create new one meshSize farther with freeSpace - meshSize
+			uint32_t freeSpaceAtOffset = voids[selectedOffset];
+			voids.erase(selectedOffset);
+			voids[selectedOffset + meshSize] = freeSpaceAtOffset - meshSize;
+
+			if (meshes.find(mesh.name()) == meshes.end())//Mesh not present in buffer
+			{
+				meshes[mesh.name()] = std::make_pair(selectedOffset, meshSize);
+
+				upload(mesh.data(), mesh.size() * sizeof(Vertex), selectedOffset * sizeof(Vertex));
+			}
+
+			return std::make_pair(meshes[mesh.name()].first, meshes[mesh.name()].second);
+		}
+
+		void remove() {}
+
+		vk::DeviceAddress address()
+		{
+			return Buffer::address();
+		}
+	private:
+		//["Monkey"] = (0, 1024) meaning that a mesh called monkey is located at offset 0 of the buffer and is of size 1024
+		std::map<std::string, std::pair<uint64_t, uint64_t>> meshes{};
+
+		//Free spaces, key being offset in buffer and value being size of free space starting at key
+		std::map<uint64_t, uint64_t> voids{};
 	};
 }
 
@@ -2374,26 +2464,27 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::CommandBuffer commandBuffer = graphicsCommandPool.allocate();
 		SOULKAN_NAMESPACE::Queue graphicsQueue = device.queue(SOULKAN_NAMESPACE::QueueFamilyCapability::GRAPHICS, 0);
 
-		//std::vector<SOULKAN_NAMESPACE::Vertex> triangleMesh = SOULKAN_NAMESPACE::Vertex::triangleMesh();
-		std::vector<SOULKAN_NAMESPACE::Vertex> mesh = SOULKAN_NAMESPACE::Vertex::objMesh("monkey.obj");
+		//draw2teststd::vector<SOULKAN_NAMESPACE::Vertex> triangleMesh = SOULKAN_NAMESPACE::Vertex::triangleMesh();
+		SOULKAN_NAMESPACE::Mesh mesh = SOULKAN_NAMESPACE::Mesh::objMesh("moai.obj");
+		SOULKAN_NAMESPACE::Mesh mesh2 = SOULKAN_NAMESPACE::Mesh::objMesh("monkey.obj");
 
+		SOULKAN_NAMESPACE::VertexBuffer vertexBuffer(device, allocator, 31'250'000 * sizeof(SOULKAN_NAMESPACE::Vertex));
 
-		SOULKAN_NAMESPACE::Buffer meshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, mesh.size()*sizeof(SOULKAN_NAMESPACE::Vertex));
+		std::pair<uint32_t, uint32_t> offsetSize1 = vertexBuffer.add(mesh);
+		std::pair<uint32_t, uint32_t> offsetSize2 = vertexBuffer.add(mesh2);
 
-		meshBuffer.upload(mesh.data(), mesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
+		//draw2testSOULKAN_NAMESPACE::Buffer triangleMeshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
 
-		//SOULKAN_NAMESPACE::Buffer triangleMeshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
+		//draw2testtriangleMeshBuffer.upload(triangleMesh.data(), triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
 
-		//triangleMeshBuffer.upload(triangleMesh.data(), triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
-
-		SOULKAN_NAMESPACE::Buffer meshMatrixBuffer(device, allocator, vk::BufferUsageFlagBits::eUniformBuffer, sizeof(glm::mat4));
+		SOULKAN_NAMESPACE::Buffer meshMatrixBuffer(device, allocator, vk::BufferUsageFlagBits::eStorageBuffer, sizeof(glm::mat4));
 		
 		glm::mat4 identityMat = glm::mat4(1.f);
 		meshMatrixBuffer.upload(&identityMat, sizeof(identityMat));
 		vk::DeviceAddress meshMatrixBufferAddress = meshMatrixBuffer.address();
 
-		std::vector<vk::DeviceAddress> bufferAddresses1{ meshBuffer.address(), meshMatrixBuffer.address() };
-		//std::vector<vk::DeviceAddress> bufferAddresses2{ triangleMeshBuffer.address(), meshMatrixBuffer.address() };
+		std::vector<vk::DeviceAddress> bufferAddresses1{ vertexBuffer.address(), meshMatrixBuffer.address()};
+		//draw2teststd::vector<vk::DeviceAddress> bufferAddresses2{ triangleMeshBuffer.address(), meshMatrixBuffer.address() };
 
 		SOULKAN_NAMESPACE::Fence renderFence(device);
 		SOULKAN_NAMESPACE::Semaphore presentSemaphore(device);
@@ -2421,6 +2512,8 @@ namespace SOULKAN_TEST_NAMESPACE
 		uint32_t i = 0;
 		double lastInputTime = 0;
 		std::atomic<bool> status(false);
+
+		std::pair<uint64_t, uint64_t> offsetSize = offsetSize1;
 		while (!glfwWindowShouldClose(window.window()))
 		{
 			//Checking if shader recompilation and pipeline rebuilding has been triggered and finished
@@ -2531,6 +2624,14 @@ namespace SOULKAN_TEST_NAMESPACE
 				camPos.y += 0.2f;
 			}
 
+			state = glfwGetKey(window.window(), GLFW_KEY_C);
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.5)
+			{
+				lastInputTime = glfwGetTime();
+
+				offsetSize = offsetSize.first == offsetSize1.first ? offsetSize2 : offsetSize1;
+			}
+
 			//DRAWING
 			device.waitFence(renderFence);
 			device.resetFence(renderFence);
@@ -2566,11 +2667,11 @@ namespace SOULKAN_TEST_NAMESPACE
 
 			commandBuffer.vk().pushConstants(boundPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, 2*sizeof(vk::DeviceAddress), bufferAddresses1.data());
 			
-			commandBuffer.vk().draw(mesh.size(), 1, 0, 0);
+			commandBuffer.vk().draw(offsetSize.second, 1, 0, offsetSize.first);
 
-			/*commandBuffer.vk().pushConstants(boundPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, 2 * sizeof(vk::DeviceAddress), bufferAddresses2.data());
+			/*draw2testcommandBuffer.vk().pushConstants(boundPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, 2 * sizeof(vk::DeviceAddress), bufferAddresses2.data());
 
-			commandBuffer.vk().draw(triangleMesh.size(), 1, 0, 0);*/
+			draw2testcommandBuffer.vk().draw(triangleMesh.size(), 1, 0, 0);*/
 
 			commandBuffer.endRendering();
 
