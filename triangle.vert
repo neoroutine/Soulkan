@@ -16,7 +16,7 @@ layout(buffer_reference, std430, buffer_reference_align = 32) readonly buffer Ve
 
 layout(buffer_reference, std430, buffer_reference_align = 64) readonly buffer Matrices
 {
-	mat4 meshMatrix;
+	mat4 meshMatrix;//Transform into array and use glBaseInstance to use each object own's matrix
 };
 
 layout(push_constant, std430) uniform Constants
