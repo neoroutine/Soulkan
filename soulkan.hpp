@@ -580,6 +580,7 @@ namespace SOULKAN_NAMESPACE
 			vk::PhysicalDeviceFeatures baseFeatures = {};
 			baseFeatures.fillModeNonSolid = true; //INFO:Allows wireframe
 			//baseFeatures.wideLines = true; //INFO:Allows lineWidth > 1.f
+			baseFeatures.shaderInt64 = true; // Int64 in shaders
 
 			deviceCreateInfo.pNext = &features;
 			features.features = baseFeatures;//INFO:if a pNext chain is used (like here), do not use deviceCreateInfo.enabledFeatures = &enabledFeatures, use this instead
@@ -1784,10 +1785,10 @@ namespace SOULKAN_NAMESPACE
 			//Pipeline layout
 			vk::PipelineLayoutCreateInfo pipelineLayout = {};
 
-			//INFO:Vertex buffer device address + Mesh matrix buffer device address
+			//INFO:Vertex buffer device address + Mesh matrix buffer device address + Mesh matrix index
 			vk::PushConstantRange bdaPushConstants = {};
 			bdaPushConstants.offset = 0;
-			bdaPushConstants.size = 2*sizeof(vk::DeviceAddress);
+			bdaPushConstants.size = 2*sizeof(vk::DeviceAddress)+1*sizeof(vk::DeviceSize);
 			bdaPushConstants.stageFlags = vk::ShaderStageFlagBits::eVertex;
 
 			pipelineLayout.pushConstantRangeCount = 1;
@@ -1965,11 +1966,11 @@ namespace SOULKAN_NAMESPACE
 		ref<Device> device_;
 	};
 
-	class Buffer : Destroyable
+	class Buffer : public Destroyable
 	{
 	public:
 		Buffer(ref<Device> device, ref<Allocator> allocator, vk::Flags<vk::BufferUsageFlagBits> usage, vk::DeviceSize size, bool mappable = false) 
-			: device_(device), allocator_(allocator), size_(size)
+			: device_(device), allocator_(allocator), size_(size), mappable_(mappable)
 		{
 			vk::BufferCreateInfo createInfo = {};
 
@@ -1991,6 +1992,12 @@ namespace SOULKAN_NAMESPACE
 			VK_CHECK(vk::Result(vmaCreateBuffer(allocator_.get().vma(), &vkCreateInfo, &allocInfo, &buffer, &allocation_, nullptr)));
 
 			buffer_ = vk::Buffer(buffer);
+
+			//TODO:Look into VMA Persistently mapped memory
+			if (mappable_)
+			{
+				vmaMapMemory(allocator_.get().vma(), allocation_, &mappedMemory);
+			}
 		}
 
 		//TODO:Implement move constructors
@@ -2039,6 +2046,7 @@ namespace SOULKAN_NAMESPACE
 		void destroy()
 		{
 			if (destroyed_) { return; }
+			if (mappable_) { vmaUnmapMemory(allocator_.get().vma(), allocation_); }
 			vmaDestroyBuffer(allocator_.get().vma(), buffer_, allocation_);
 			destroyed_ = true;
 		}
@@ -2051,14 +2059,11 @@ namespace SOULKAN_NAMESPACE
 
 		void upload(void *data, size_t size, uint32_t offset = 0)
 		{
-			void* dst;
-			vmaMapMemory(allocator_.get().vma(), allocation_, &dst);
-
-			char* offsetDst = static_cast<char*>(dst) + offset;//We assume that sizeof(char) = 1
+			if (!mappable_) { KILL("Trying to map to a buffer that is not mapapble"); }
+			
+			char* offsetDst = static_cast<char*>(mappedMemory) + offset;//We assume that sizeof(char) = 1
 
 			memcpy(offsetDst, data, size);
-
-			vmaUnmapMemory(allocator_.get().vma(), allocation_);
 		}
 
 		vk::DeviceAddress address()
@@ -2092,6 +2097,9 @@ namespace SOULKAN_NAMESPACE
 		vk::DeviceSize size_ = 0;
 
 		vk::DeviceAddress address_ = 0;
+
+		bool mappable_;
+		void* mappedMemory = nullptr;
 		
 	};
 
@@ -2214,12 +2222,14 @@ namespace SOULKAN_NAMESPACE
 		ref<Allocator> allocator_;
 	};
 
+	//Copyable
 	struct Vertex
 	{
 		glm::vec4 position;
 		glm::vec4 color;
 	};
 
+	//Non copyable movable
 	class Mesh
 	{
 	public:
@@ -2377,6 +2387,7 @@ namespace SOULKAN_NAMESPACE
 	};
 	
 	//Small mappable buffer
+	//Non copyable movable
 	class StagingBuffer : public Buffer
 	{
 	public:
@@ -2393,40 +2404,41 @@ namespace SOULKAN_NAMESPACE
 	private:
 		vk::DeviceSize size_;
 	};
-	
+
 	//Big buffer holding lots of vertices in device_local memory
-	//TODO:Refactor, do whole copy to staging buffer and copy to device local after waiting for fence
 	//ALEX:would be better to copy to staging in one go and then copying everything to the gpu in one go
 	//instead of copying and waiting and copying .
-	class VertexBuffer : protected Buffer //Protected buffer so end user cannot directly call VertexBuffer.upload() and mess things up
+	//TODO:Handle cases where user tried to add an already present mesh in the buffer
+	//Non copyable movable
+	class LocalBuffer : public Buffer //Protected buffer so end user cannot directly call VertexBuffer.upload() and mess things up
 	{
 	public:
-		VertexBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize size) :
-			Buffer(device, allocator, (vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst), size),
-			stagingBuffer_(device, allocator, 200'000'000),
+		LocalBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize localSize, vk::DeviceSize stagingSize = 10'000'000) :
+			Buffer(device, allocator, (vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferDst), localSize),
+			stagingBuffer_(device, allocator, stagingSize),
 			transferPool_(device, device.get().queueIndex(QueueFamilyCapability::TRANSFER)),
 			transferCommandBuffer_(transferPool_.allocate()),
 			transferFence_(device),
 			transferQueue_(device.get().queue(QueueFamilyCapability::TRANSFER, 0))
 		{
-			voids_[0] = size;//Whole buffer is free when first created
+			voids_[0] = localSize;//Whole buffer is free when first created
 		}
 
 		//Adds and uploads mesh to staging
 		//TODO:Proper return, pair or return code
-		void add(Mesh& mesh)
+		void add(std::string name, void* data, size_t size)
 		{
 			//Find space in staging
-			if (stagingVoidStart_ + mesh.size() > stagingBuffer_.size()) //Not enough space
+			if (stagingVoidStart_ + size > stagingBuffer_.size()) //Not enough space
 			{
 				KILL("Not enough space in staging buffer when trying to add following mesh: {} of size {}", mesh.name(), mesh.size());
 			}
-			
-			//Upload to staging
-			stagingBuffer_.upload(mesh.data(), mesh.size(), stagingVoidStart_);
-			toBeUploaded_[mesh.name()] = std::make_pair(stagingVoidStart_, mesh.size());
 
-			stagingVoidStart_ += mesh.size();
+			//Upload to staging
+			stagingBuffer_.upload(data, size, stagingVoidStart_);
+			toBeUploaded_[name] = std::make_pair(stagingVoidStart_, size);
+
+			stagingVoidStart_ += size;
 		}
 
 		void upload()
@@ -2455,7 +2467,7 @@ namespace SOULKAN_NAMESPACE
 				copyRegions.push_back(copyRegion);
 
 				//Updating meshes and voids
-				meshes_[key] = std::make_pair(selectedOffset, val.second);
+				elements_[key] = std::make_pair(selectedOffset, val.second);
 
 				vk::DeviceSize freeSpaceAtOffset = voids_[selectedOffset];
 				voids_.erase(selectedOffset);
@@ -2501,17 +2513,17 @@ namespace SOULKAN_NAMESPACE
 
 		void remove(std::string name)
 		{
-			vk::DeviceSize meshOffset = meshes_[name].first;
-			vk::DeviceSize meshSize = meshes_[name].second;
+			vk::DeviceSize elementOffset = elements_[name].first;
+			vk::DeviceSize elementSize = elements_[name].second;
 
 			//In case a void follows the one we're going to create
 			//TODO:Do it for a void before this one
-			voids_[meshOffset] = meshSize;
-			if (voids_.find(meshOffset+meshSize) != voids_.end()) //Found
+			voids_[elementOffset] = elementSize;
+			if (voids_.find(elementOffset + elementSize) != voids_.end()) //Found
 			{
-				vk::DeviceSize extra = voids_[meshOffset + meshSize];
+				vk::DeviceSize extra = voids_[elementOffset + elementSize];
 
-				voids_[meshOffset] = meshSize + extra;
+				voids_[elementOffset] = elementSize + extra;
 			}
 		}
 
@@ -2520,13 +2532,10 @@ namespace SOULKAN_NAMESPACE
 			return Buffer::address();
 		}
 
-		std::pair<vk::DeviceSize, vk::DeviceSize> mesh(std::string name)
-		{
-			return meshes_[name];
-		}
-	private:
+	protected:
+		//Elements located inside the device local buffer
 		//["Monkey"] = (0, 1024) meaning that a mesh called monkey is located at offset 0 of the buffer and is of size 1024
-		std::map<std::string, std::pair<vk::DeviceSize, vk::DeviceSize>> meshes_{};
+		std::map<std::string, std::pair<vk::DeviceSize, vk::DeviceSize>> elements_{};
 
 		//Free spaces, key being offset in buffer and value being size of free space starting at key
 		std::map<vk::DeviceSize, vk::DeviceSize> voids_{};
@@ -2559,6 +2568,146 @@ namespace SOULKAN_NAMESPACE
 
 			return selectedOffset;
 		}
+	};
+	
+	class VertexBuffer : public LocalBuffer
+	{
+	public:
+		VertexBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize localSize, vk::DeviceSize stagingSize = 10'000'000) :
+			LocalBuffer(device, allocator, localSize, stagingSize) {}
+
+		//vertexMode = true -> (vertex offset, vertex count) will be returned
+		//When set to false, (real offset, real count) will be returned (in bytes)
+		std::pair<vk::DeviceSize, vk::DeviceSize> mesh(std::string name, bool vertexMode = true)
+		{
+			auto trueOffsetSize = elements_[name];
+			return (vertexMode ? std::make_pair(trueOffsetSize.first / sizeof(Vertex), trueOffsetSize.second / sizeof(Vertex)) : trueOffsetSize);
+		}
+	private:
+
+	};
+
+	class MatrixBuffer : public LocalBuffer
+	{
+	public:
+		MatrixBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize localSize, vk::DeviceSize stagingSize = 10'000'000) :
+			LocalBuffer(device, allocator, localSize, stagingSize) {}
+
+		void modify(std::string name, void* data, size_t size)
+		{
+			//Wait for potential previous upload to have properly finished 
+			device_.get().waitFence(transferFence_);
+			device_.get().resetFence(transferFence_);
+
+			//Upload to staging
+			stagingBuffer_.upload(data, size, stagingVoidStart_);
+
+
+			//Adding copy region from staging to buffer
+			vk::BufferCopy2 copyRegion = {};
+			copyRegion.srcOffset = stagingVoidStart_;
+			copyRegion.dstOffset = elements_[name].first;
+			copyRegion.size = size;
+
+			toBeUploaded_.clear();
+
+			//Upload to buffer
+			device_.get().vk().resetCommandPool(transferPool_.vk());
+
+			//Actual copy command
+			transferCommandBuffer_.begin();
+
+			vk::CopyBufferInfo2 bufferCopy = {};
+			bufferCopy.srcBuffer = stagingBuffer_.vk();
+			bufferCopy.dstBuffer = buffer_;
+			bufferCopy.regionCount = 1;
+
+			bufferCopy.pRegions = &copyRegion;
+
+			transferCommandBuffer_.vk().copyBuffer2(&bufferCopy);
+
+			//Barrier after write to ensure no two writes are being done concurrently + reads are executed after the whole write is done
+			vk::MemoryBarrier2 barrier = {};
+			barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
+			barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+
+			barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
+			barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead;
+
+			vk::DependencyInfo dependency = {};
+			dependency.memoryBarrierCount = 1;
+			dependency.pMemoryBarriers = &barrier;
+
+			transferCommandBuffer_.vk().pipelineBarrier2(&dependency);
+
+			transferCommandBuffer_.end();
+
+			transferQueue_.submit(transferCommandBuffer_, transferFence_);
+		}
+
+		//vertexMode = true -> (vertex offset, vertex count) will be returned
+		//When set to false, (real offset, real count) will be returned (in bytes)
+		std::pair<vk::DeviceSize, vk::DeviceSize> matrix(std::string name, bool matrixMode = true)
+		{
+			auto trueOffsetSize = elements_[name];
+			return (matrixMode ? std::make_pair(trueOffsetSize.first / sizeof(glm::mat4), trueOffsetSize.second / sizeof(glm::mat4)) : trueOffsetSize);
+		}
+	private:
+
+	};
+
+	//Copyable movable
+	//TODO:Boolean indicating if offset and size are in bytes or vertex mode
+	class BufferView
+	{
+	public:
+		BufferView(ref<Buffer> buffer, vk::DeviceSize offset, vk::DeviceSize size) :
+			buffer_(buffer), offset_(offset), size_(size) {}
+
+		BufferView(ref<Buffer> buffer, std::pair<vk::DeviceSize, vk::DeviceSize> offsetSize) :
+			buffer_(buffer), offset_(offsetSize.first), size_(offsetSize.second) {}
+
+		vk::DeviceSize offset()
+		{
+			return offset_;
+		}
+
+		vk::DeviceSize size()
+		{
+			return size_;
+		}
+	private:
+		ref<Buffer> buffer_;
+		vk::DeviceSize offset_;
+		vk::DeviceSize size_;
+	};
+
+	class MeshInstance
+	{
+	public:
+		MeshInstance(std::string name, BufferView meshView, BufferView matrixView) :
+			name_(name), meshView_(meshView), matrixView_(matrixView)
+		{}
+
+		std::string name()
+		{
+			return name_;
+		}
+
+
+		BufferView meshView()
+		{
+			return meshView_;
+		}
+
+		BufferView matrixView()
+		{
+			return matrixView_;
+		}
+	private:
+		std::string name_;
+		BufferView meshView_;
+		BufferView matrixView_;
 	};
 }
 
@@ -2634,33 +2783,58 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::CommandBuffer commandBuffer = graphicsCommandPool.allocate();
 		SOULKAN_NAMESPACE::Queue graphicsQueue = device.queue(SOULKAN_NAMESPACE::QueueFamilyCapability::GRAPHICS, 0);
 
-		//draw2teststd::vector<SOULKAN_NAMESPACE::Vertex> triangleMesh = SOULKAN_NAMESPACE::Vertex::triangleMesh();
 		SOULKAN_NAMESPACE::Mesh mesh = SOULKAN_NAMESPACE::Mesh::objMesh("monkey.obj");
 		SOULKAN_NAMESPACE::Mesh mesh2 = SOULKAN_NAMESPACE::Mesh::objMesh("moai.obj");
 		
-
+		//Mesh vertex buffer
 		SOULKAN_NAMESPACE::VertexBuffer vertexBuffer(device, allocator, 15'625'000 * sizeof(SOULKAN_NAMESPACE::Vertex));
 
-		vertexBuffer.add(mesh);
-		vertexBuffer.add(mesh2);
+		vertexBuffer.add(mesh.name(), mesh.data(), mesh.size());
+		vertexBuffer.add(mesh2.name(), mesh2.data(), mesh2.size());
 
 		vertexBuffer.upload();
 
 		std::pair<uint64_t, uint64_t> offsetSize1 = vertexBuffer.mesh(mesh.name());
 		std::pair<uint64_t, uint64_t> offsetSize2 = vertexBuffer.mesh(mesh2.name());
 
-		//draw2testSOULKAN_NAMESPACE::Buffer triangleMeshBuffer(device, allocator, vk::BufferUsageFlagBits::eVertexBuffer, triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
-
-		//draw2testtriangleMeshBuffer.upload(triangleMesh.data(), triangleMesh.size() * sizeof(SOULKAN_NAMESPACE::Vertex));
-
-		SOULKAN_NAMESPACE::Buffer meshMatrixBuffer(device, allocator, vk::BufferUsageFlagBits::eStorageBuffer, sizeof(glm::mat4), true);
+		//Mesh matrix buffer
+		SOULKAN_NAMESPACE::MatrixBuffer meshMatrixBuffer(device, allocator, 1'000 * sizeof(glm::mat4));
 		
 		glm::mat4 identityMat = glm::mat4(1.f);
-		meshMatrixBuffer.upload(&identityMat, sizeof(identityMat));
-		vk::DeviceAddress meshMatrixBufferAddress = meshMatrixBuffer.address();
+		meshMatrixBuffer.add("identity", &identityMat, sizeof(glm::mat4));
+		meshMatrixBuffer.add("rotatingOrigin", &identityMat, sizeof(glm::mat4));
 
-		std::vector<vk::DeviceAddress> bufferAddresses1{ vertexBuffer.address(), meshMatrixBuffer.address()};
-		//draw2teststd::vector<vk::DeviceAddress> bufferAddresses2{ triangleMeshBuffer.address(), meshMatrixBuffer.address() };
+		meshMatrixBuffer.add("rotatingSomewhere1", &identityMat, sizeof(glm::mat4));
+		meshMatrixBuffer.add("rotatingSomewhere2", &identityMat, sizeof(glm::mat4));
+		meshMatrixBuffer.add("rotatingSomewhere3", &identityMat, sizeof(glm::mat4));
+		meshMatrixBuffer.add("rotatingSomewhere4", &identityMat, sizeof(glm::mat4));
+
+		meshMatrixBuffer.upload();
+
+		std::vector<SOULKAN_NAMESPACE::MeshInstance> meshInstances{};
+		meshInstances.push_back(SOULKAN_NAMESPACE::MeshInstance("monkey1",
+							    SOULKAN_NAMESPACE::BufferView(vertexBuffer, vertexBuffer.mesh("monkey.obj")),
+							    SOULKAN_NAMESPACE::BufferView(meshMatrixBuffer, meshMatrixBuffer.matrix("identity"))));
+
+		meshInstances.push_back(SOULKAN_NAMESPACE::MeshInstance("moai1",
+							    SOULKAN_NAMESPACE::BufferView(vertexBuffer, vertexBuffer.mesh("moai.obj")),
+							    SOULKAN_NAMESPACE::BufferView(meshMatrixBuffer, meshMatrixBuffer.matrix("rotatingSomewhere1"))));
+
+		meshInstances.push_back(SOULKAN_NAMESPACE::MeshInstance("moai2",
+							    SOULKAN_NAMESPACE::BufferView(vertexBuffer, vertexBuffer.mesh("moai.obj")),
+							    SOULKAN_NAMESPACE::BufferView(meshMatrixBuffer, meshMatrixBuffer.matrix("rotatingSomewhere2"))));
+
+		meshInstances.push_back(SOULKAN_NAMESPACE::MeshInstance("moai3",
+							    SOULKAN_NAMESPACE::BufferView(vertexBuffer, vertexBuffer.mesh("moai.obj")),
+							    SOULKAN_NAMESPACE::BufferView(meshMatrixBuffer, meshMatrixBuffer.matrix("rotatingSomewhere3"))));
+
+		meshInstances.push_back(SOULKAN_NAMESPACE::MeshInstance("moai4",
+							    SOULKAN_NAMESPACE::BufferView(vertexBuffer, vertexBuffer.mesh("moai.obj")),
+							    SOULKAN_NAMESPACE::BufferView(meshMatrixBuffer, meshMatrixBuffer.matrix("rotatingSomewhere4"))));
+
+
+
+		std::vector<vk::DeviceAddress> pushConstants{ vertexBuffer.address(), meshMatrixBuffer.address(), meshInstances[0].matrixView().offset()};
 
 		SOULKAN_NAMESPACE::Fence renderFence(device);
 		SOULKAN_NAMESPACE::Semaphore presentSemaphore(device);
@@ -2683,6 +2857,10 @@ namespace SOULKAN_TEST_NAMESPACE
 		vk::PipelineLayout boundPipelineLayout = solidPipeline.layout();
 
 		glm::vec3 camPos = { 0.f,0.f,-2.f };
+		glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
+		projection[1][1] *= -1;
+
+
 		float rotationSpeed = 0.3f;
 
 		uint32_t i = 0;
@@ -2709,6 +2887,22 @@ namespace SOULKAN_TEST_NAMESPACE
 			glfwPollEvents();
 			window.rename(std::format("Hello ({})", i));
 
+			//model rotation
+			glm::mat4 model = glm::rotate(glm::mat4{ 1.0f }, glm::radians(i * rotationSpeed), glm::vec3(0, 1, 0));
+			glm::mat4 view = glm::translate(glm::mat4(1.f), camPos);
+
+			//calculate final mesh matrix
+			glm::mat4 meshMatrix = projection * view * glm::mat4{ 1.0f };
+			glm::mat4 meshRotatingMatrix1 = projection * view * glm::translate(model, glm::vec3(3.0, 3.0, 0.0));
+			glm::mat4 meshRotatingMatrix2 = projection * view * glm::translate(model, glm::vec3(-3.0, 3.0, 0.0));
+			glm::mat4 meshRotatingMatrix3 = projection * view * glm::translate(model, glm::vec3(3.0, -3.0, 0.0));
+			glm::mat4 meshRotatingMatrix4 = projection * view * glm::translate(model, glm::vec3(-3.0, -3.0, 0.0));
+
+			meshMatrixBuffer.modify("identity", &meshMatrix, sizeof(meshMatrix));
+			meshMatrixBuffer.modify("rotatingSomewhere1", &meshRotatingMatrix1, sizeof(meshRotatingMatrix1));
+			meshMatrixBuffer.modify("rotatingSomewhere2", &meshRotatingMatrix2, sizeof(meshRotatingMatrix2));
+			meshMatrixBuffer.modify("rotatingSomewhere3", &meshRotatingMatrix3, sizeof(meshRotatingMatrix3));
+			meshMatrixBuffer.modify("rotatingSomewhere4", &meshRotatingMatrix4, sizeof(meshRotatingMatrix4));
 
 			//Shader recompilation and graphics pipeline rebuilding when pressing R
 			int state = glfwGetKey(window.window(), GLFW_KEY_R);
@@ -2806,7 +3000,8 @@ namespace SOULKAN_TEST_NAMESPACE
 				lastInputTime = glfwGetTime();
 
 				offsetSize = offsetSize.first == offsetSize1.first ? offsetSize2 : offsetSize1;
-				std::cout << std::format("Switched to model at offset {} of size {}", offsetSize.first, offsetSize.second) << std::endl;
+				//bufferAddresses[2] = (bufferAddresses[2] == monkey1MatOffset) ? moai1MatOffset: monkey1MatOffset;
+				//std::cout << std::format("Switched to model at offset {} of size {} with mat at offset {}", offsetSize.first, offsetSize.second, bufferAddresses[2]) << std::endl;
 			}
 
 			//DRAWING
@@ -2829,23 +3024,12 @@ namespace SOULKAN_TEST_NAMESPACE
 
 			commandBuffer.vk().bindPipeline(vk::PipelineBindPoint::eGraphics, boundPipeline);
 
-			glm::mat4 view = glm::translate(glm::mat4(1.f), camPos);
-			//camera projection
-			glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
-			projection[1][1] *= -1;
-
-			//model rotation
-			glm::mat4 model = glm::rotate(glm::mat4{ 1.0f }, glm::radians(i * rotationSpeed), glm::vec3(0, 1, 0));
-
-			//calculate final mesh matrix
-			glm::mat4 meshMatrix = projection * view * model;
-
-			meshMatrixBuffer.upload(&meshMatrix, sizeof(meshMatrix));
-
-			commandBuffer.vk().pushConstants(boundPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, 2*sizeof(vk::DeviceAddress), bufferAddresses1.data());
-			
-			commandBuffer.vk().draw(offsetSize.second / sizeof(SOULKAN_NAMESPACE::Vertex), 1, 0, offsetSize.first / sizeof(SOULKAN_NAMESPACE::Vertex));
-
+			for (auto& meshInstance : meshInstances)
+			{
+				pushConstants[2] = meshInstance.matrixView().offset();
+				commandBuffer.vk().pushConstants(boundPipelineLayout, vk::ShaderStageFlagBits::eVertex, 0, 2 * sizeof(vk::DeviceAddress) + 1 * sizeof(vk::DeviceSize), pushConstants.data());
+				commandBuffer.vk().draw(meshInstance.meshView().size(), 1, 0, meshInstance.meshView().offset());
+			}
 
 			commandBuffer.endRendering();
 

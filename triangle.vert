@@ -2,6 +2,7 @@
 #version 460
 #extension GL_KHR_vulkan_glsl : enable
 #extension GL_EXT_buffer_reference : enable
+#extension GL_ARB_gpu_shader_int64 : enable
 
 struct Vertex
 {
@@ -16,13 +17,14 @@ layout(buffer_reference, std430, buffer_reference_align = 32) readonly buffer Ve
 
 layout(buffer_reference, std430, buffer_reference_align = 64) readonly buffer Matrices
 {
-	mat4 meshMatrix;//Transform into array and use glBaseInstance to use each object own's matrix
+	mat4 meshMatrices[];//Transform into array and use glBaseInstance to use each object own's matrix
 };
 
 layout(push_constant, std430) uniform Constants
 {
 	Vertices vertices;
 	Matrices matrices;
+	uint64_t matrixIndex;
 } constants;
 
 layout (location = 0) out vec4 outColor;
@@ -43,10 +45,8 @@ void main()
 	);
 
 	//output the position of each vertex
-	//gl_Position = positions[gl_VertexIndex];
-	gl_Position = constants.matrices.meshMatrix * constants.vertices.v[gl_BaseInstance + gl_VertexIndex].position;
+	gl_Position = constants.matrices.meshMatrices[uint(constants.matrixIndex)] * constants.vertices.v[gl_BaseInstance + gl_VertexIndex].position;
 
-	//output color according to position
-	//outColor = colors[gl_VertexIndex];
+	//output normal as color
 	outColor = constants.vertices.v[gl_BaseInstance + gl_VertexIndex].color;
 }
