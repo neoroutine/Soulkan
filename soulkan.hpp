@@ -2441,7 +2441,7 @@ namespace SOULKAN_NAMESPACE
 			stagingVoidStart_ += size;
 		}
 
-		void upload()
+		void upload(bool overwriting = false)
 		{
 			//Wait for potential previous upload to have properly finished 
 			device_.get().waitFence(transferFence_);
@@ -2452,7 +2452,13 @@ namespace SOULKAN_NAMESPACE
 			for (auto& [key, val] : toBeUploaded_)
 			{
 				//Find space in buffer
-				uint64_t selectedOffset = firstBufferVoid(val.second);
+				bool elementPresent = elements_.find(key) != elements_.end();
+				if (elementPresent && !overwriting) //Element already present + we don't overwrite
+				{
+					continue;
+				}
+
+				uint64_t selectedOffset = overwriting ? elements_[key].first : firstBufferVoid(val.second);
 				if (selectedOffset == std::numeric_limits<uint64_t>::max())
 				{
 					KILL(std::format("Not enough space in local buffer for following mesh : {} of size {}", key, val.second));
@@ -2466,13 +2472,15 @@ namespace SOULKAN_NAMESPACE
 
 				copyRegions.push_back(copyRegion);
 
-				//Updating meshes and voids
-				elements_[key] = std::make_pair(selectedOffset, val.second);
+				//Updating meshes and voids if element is new 
+				if (!elementPresent)
+				{
+					elements_[key] = std::make_pair(selectedOffset, val.second);
 
-				vk::DeviceSize freeSpaceAtOffset = voids_[selectedOffset];
-				voids_.erase(selectedOffset);
-				voids_[selectedOffset + val.second] = freeSpaceAtOffset - val.second;
-
+					vk::DeviceSize freeSpaceAtOffset = voids_[selectedOffset];
+					voids_.erase(selectedOffset);
+					voids_[selectedOffset + val.second] = freeSpaceAtOffset - val.second;
+				}
 			}
 
 			toBeUploaded_.clear();
@@ -2592,58 +2600,6 @@ namespace SOULKAN_NAMESPACE
 	public:
 		MatrixBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize localSize, vk::DeviceSize stagingSize = 10'000'000) :
 			LocalBuffer(device, allocator, localSize, stagingSize) {}
-
-		void modify(std::string name, void* data, size_t size)
-		{
-			//Wait for potential previous upload to have properly finished 
-			device_.get().waitFence(transferFence_);
-			device_.get().resetFence(transferFence_);
-
-			//Upload to staging
-			stagingBuffer_.upload(data, size, stagingVoidStart_);
-
-
-			//Adding copy region from staging to buffer
-			vk::BufferCopy2 copyRegion = {};
-			copyRegion.srcOffset = stagingVoidStart_;
-			copyRegion.dstOffset = elements_[name].first;
-			copyRegion.size = size;
-
-			toBeUploaded_.clear();
-
-			//Upload to buffer
-			device_.get().vk().resetCommandPool(transferPool_.vk());
-
-			//Actual copy command
-			transferCommandBuffer_.begin();
-
-			vk::CopyBufferInfo2 bufferCopy = {};
-			bufferCopy.srcBuffer = stagingBuffer_.vk();
-			bufferCopy.dstBuffer = buffer_;
-			bufferCopy.regionCount = 1;
-
-			bufferCopy.pRegions = &copyRegion;
-
-			transferCommandBuffer_.vk().copyBuffer2(&bufferCopy);
-
-			//Barrier after write to ensure no two writes are being done concurrently + reads are executed after the whole write is done
-			vk::MemoryBarrier2 barrier = {};
-			barrier.srcStageMask = vk::PipelineStageFlagBits2::eTransfer;
-			barrier.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
-
-			barrier.dstStageMask = vk::PipelineStageFlagBits2::eAllCommands;
-			barrier.dstAccessMask = vk::AccessFlagBits2::eMemoryRead;
-
-			vk::DependencyInfo dependency = {};
-			dependency.memoryBarrierCount = 1;
-			dependency.pMemoryBarriers = &barrier;
-
-			transferCommandBuffer_.vk().pipelineBarrier2(&dependency);
-
-			transferCommandBuffer_.end();
-
-			transferQueue_.submit(transferCommandBuffer_, transferFence_);
-		}
 
 		//vertexMode = true -> (vertex offset, vertex count) will be returned
 		//When set to false, (real offset, real count) will be returned (in bytes)
@@ -2898,11 +2854,13 @@ namespace SOULKAN_TEST_NAMESPACE
 			glm::mat4 meshRotatingMatrix3 = projection * view * glm::translate(model, glm::vec3(3.0, -3.0, 0.0));
 			glm::mat4 meshRotatingMatrix4 = projection * view * glm::translate(model, glm::vec3(-3.0, -3.0, 0.0));
 
-			meshMatrixBuffer.modify("identity", &meshMatrix, sizeof(meshMatrix));
-			meshMatrixBuffer.modify("rotatingSomewhere1", &meshRotatingMatrix1, sizeof(meshRotatingMatrix1));
-			meshMatrixBuffer.modify("rotatingSomewhere2", &meshRotatingMatrix2, sizeof(meshRotatingMatrix2));
-			meshMatrixBuffer.modify("rotatingSomewhere3", &meshRotatingMatrix3, sizeof(meshRotatingMatrix3));
-			meshMatrixBuffer.modify("rotatingSomewhere4", &meshRotatingMatrix4, sizeof(meshRotatingMatrix4));
+			meshMatrixBuffer.add("identity", &meshMatrix, sizeof(meshMatrix));
+			meshMatrixBuffer.add("rotatingSomewhere1", &meshRotatingMatrix1, sizeof(meshRotatingMatrix1));
+			meshMatrixBuffer.add("rotatingSomewhere2", &meshRotatingMatrix2, sizeof(meshRotatingMatrix2));
+			meshMatrixBuffer.add("rotatingSomewhere3", &meshRotatingMatrix3, sizeof(meshRotatingMatrix3));
+			meshMatrixBuffer.add("rotatingSomewhere4", &meshRotatingMatrix4, sizeof(meshRotatingMatrix4));
+
+			meshMatrixBuffer.upload(true);
 
 			//Shader recompilation and graphics pipeline rebuilding when pressing R
 			int state = glfwGetKey(window.window(), GLFW_KEY_R);
