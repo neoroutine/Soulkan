@@ -2405,12 +2405,10 @@ namespace SOULKAN_NAMESPACE
 		vk::DeviceSize size_;
 	};
 
-	//Big buffer holding lots of vertices in device_local memory
 	//ALEX:would be better to copy to staging in one go and then copying everything to the gpu in one go
 	//instead of copying and waiting and copying .
-	//TODO:Handle cases where user tried to add an already present mesh in the buffer
 	//Non copyable movable
-	class LocalBuffer : public Buffer //Protected buffer so end user cannot directly call VertexBuffer.upload() and mess things up
+	class LocalBuffer : public Buffer //TODO:Protected upload so end user cannot directly call VertexBuffer.upload() and mess things up
 	{
 	public:
 		LocalBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize localSize, vk::DeviceSize stagingSize = 10'000'000) :
@@ -2431,7 +2429,7 @@ namespace SOULKAN_NAMESPACE
 			//Find space in staging
 			if (stagingVoidStart_ + size > stagingBuffer_.size()) //Not enough space
 			{
-				KILL("Not enough space in staging buffer when trying to add following mesh: {} of size {}", mesh.name(), mesh.size());
+				KILL(std::format("Not enough space in staging buffer (size = {} bytes) when trying to add following object: {} of size {} bytes", stagingBuffer_.size(), name, size));
 			}
 
 			//Upload to staging
@@ -2578,6 +2576,7 @@ namespace SOULKAN_NAMESPACE
 		}
 	};
 	
+	//Big buffer holding lots of vertices in device_local memory
 	class VertexBuffer : public LocalBuffer
 	{
 	public:
@@ -2718,7 +2717,10 @@ namespace SOULKAN_TEST_NAMESPACE
 		glfwInit();
 		dq.push([]() { glfwTerminate(); });
 
-		SOULKAN_NAMESPACE::Window window(800, 600, "Hello");
+		uint32_t windowWidth = 1200;
+		uint32_t windowHeight = 800;
+
+		SOULKAN_NAMESPACE::Window window(windowWidth, windowHeight, "Hello");
 
 		SOULKAN_NAMESPACE::Instance instance(true);
 
@@ -2739,26 +2741,22 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::CommandBuffer commandBuffer = graphicsCommandPool.allocate();
 		SOULKAN_NAMESPACE::Queue graphicsQueue = device.queue(SOULKAN_NAMESPACE::QueueFamilyCapability::GRAPHICS, 0);
 
-		SOULKAN_NAMESPACE::Mesh mesh = SOULKAN_NAMESPACE::Mesh::objMesh("monkey.obj");
+		SOULKAN_NAMESPACE::Mesh mesh = SOULKAN_NAMESPACE::Mesh::objMesh("lost_empire.obj");
 		SOULKAN_NAMESPACE::Mesh mesh2 = SOULKAN_NAMESPACE::Mesh::objMesh("moai.obj");
 		
 		//Mesh vertex buffer
-		SOULKAN_NAMESPACE::VertexBuffer vertexBuffer(device, allocator, 15'625'000 * sizeof(SOULKAN_NAMESPACE::Vertex));
+		SOULKAN_NAMESPACE::VertexBuffer vertexBuffer(device, allocator, 15'625'000 * sizeof(SOULKAN_NAMESPACE::Vertex), 100'000'000);
 
 		vertexBuffer.add(mesh.name(), mesh.data(), mesh.size());
 		vertexBuffer.add(mesh2.name(), mesh2.data(), mesh2.size());
 
 		vertexBuffer.upload();
 
-		std::pair<uint64_t, uint64_t> offsetSize1 = vertexBuffer.mesh(mesh.name());
-		std::pair<uint64_t, uint64_t> offsetSize2 = vertexBuffer.mesh(mesh2.name());
-
 		//Mesh matrix buffer
 		SOULKAN_NAMESPACE::MatrixBuffer meshMatrixBuffer(device, allocator, 1'000 * sizeof(glm::mat4));
 		
 		glm::mat4 identityMat = glm::mat4(1.f);
 		meshMatrixBuffer.add("identity", &identityMat, sizeof(glm::mat4));
-		meshMatrixBuffer.add("rotatingOrigin", &identityMat, sizeof(glm::mat4));
 
 		meshMatrixBuffer.add("rotatingSomewhere1", &identityMat, sizeof(glm::mat4));
 		meshMatrixBuffer.add("rotatingSomewhere2", &identityMat, sizeof(glm::mat4));
@@ -2768,8 +2766,8 @@ namespace SOULKAN_TEST_NAMESPACE
 		meshMatrixBuffer.upload();
 
 		std::vector<SOULKAN_NAMESPACE::MeshInstance> meshInstances{};
-		meshInstances.push_back(SOULKAN_NAMESPACE::MeshInstance("monkey1",
-							    SOULKAN_NAMESPACE::BufferView(vertexBuffer, vertexBuffer.mesh("monkey.obj")),
+		meshInstances.push_back(SOULKAN_NAMESPACE::MeshInstance("sponza1",
+							    SOULKAN_NAMESPACE::BufferView(vertexBuffer, vertexBuffer.mesh("lost_empire.obj")),
 							    SOULKAN_NAMESPACE::BufferView(meshMatrixBuffer, meshMatrixBuffer.matrix("identity"))));
 
 		meshInstances.push_back(SOULKAN_NAMESPACE::MeshInstance("moai1",
@@ -2812,8 +2810,20 @@ namespace SOULKAN_TEST_NAMESPACE
 		vk::Pipeline boundPipeline = solidPipeline.vk();
 		vk::PipelineLayout boundPipelineLayout = solidPipeline.layout();
 
-		glm::vec3 camPos = { 0.f,0.f,-2.f };
-		glm::mat4 projection = glm::perspective(glm::radians(70.f), 1700.f / 900.f, 0.1f, 200.0f);
+		glm::vec3 cameraFront{ 0.f, 0.f, 1.f };
+		glm::vec3 cameraUp{ 0.f, 1.f, 0.f };
+		glm::vec3 cameraRight{ 1.f, 0.f, 0.f };
+
+		glm::vec3 cameraPos{ 0.f,0.f,-2.f };
+		float cameraFov = 70.f;
+		float cameraMovementSpeed = 0.5f;
+		float cameraSensitivity = 0.5f;
+
+		float cameraYaw = -90.f;
+		float cameraPitch = 0.f;
+
+
+		glm::mat4 projection = glm::perspective(glm::radians(cameraFov), 1700.f / 900.f, 0.1f, 200.0f);
 		projection[1][1] *= -1;
 
 
@@ -2821,9 +2831,12 @@ namespace SOULKAN_TEST_NAMESPACE
 
 		uint32_t i = 0;
 		double lastInputTime = 0;
+		double LastMouseInputTime = 0;
 		std::atomic<bool> status(false);
 
-		std::pair<uint64_t, uint64_t> offsetSize = offsetSize1;
+		double lastMouseX = windowWidth / 2.f;
+		double lastMouseY = windowHeight / 2.f;
+
 		while (!glfwWindowShouldClose(window.window()))
 		{
 			//Checking if shader recompilation and pipeline rebuilding has been triggered and finished
@@ -2843,9 +2856,35 @@ namespace SOULKAN_TEST_NAMESPACE
 			glfwPollEvents();
 			window.rename(std::format("Hello ({})", i));
 
+			if (lastMouseX != -1 && lastMouseY != -1 && glfwGetTime() > LastMouseInputTime + 0.01)
+			{
+				LastMouseInputTime = glfwGetTime();
+
+				double currentMouseX = -1;
+				double currentMouseY = -1;
+
+				glfwGetCursorPos(window.window(), &currentMouseX, &currentMouseY);
+				float xOffset = currentMouseX - lastMouseX;
+				cameraYaw = std::fmod(cameraYaw + (xOffset * cameraSensitivity), 360.f); //Yaw can get big after adding lots of time, floating point imprecision can make movement janky, so we mod it out
+				cameraPitch += (lastMouseY - currentMouseY) * cameraSensitivity;
+				
+				if (cameraPitch > 89.f) { cameraPitch = 89.f; }
+				if (cameraPitch < -89.f) { cameraPitch = -89.f; }
+
+				glm::vec3 newCamFront;
+				newCamFront.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+				newCamFront.y = sin(glm::radians(cameraPitch));
+				newCamFront.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+				cameraFront = glm::normalize(newCamFront);
+
+				lastMouseX = currentMouseX;
+				lastMouseY = currentMouseY;
+			}
+
 			//model rotation
 			glm::mat4 model = glm::rotate(glm::mat4{ 1.0f }, glm::radians(i * rotationSpeed), glm::vec3(0, 1, 0));
-			glm::mat4 view = glm::translate(glm::mat4(1.f), camPos);
+			//glm::mat4 view = glm::translate(glm::mat4(1.f), camPos);
+			glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
 
 			//calculate final mesh matrix
 			glm::mat4 meshMatrix = projection * view * glm::mat4{ 1.0f };
@@ -2861,6 +2900,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			meshMatrixBuffer.add("rotatingSomewhere4", &meshRotatingMatrix4, sizeof(meshRotatingMatrix4));
 
 			meshMatrixBuffer.upload(true);
+
 
 			//Shader recompilation and graphics pipeline rebuilding when pressing R
 			int state = glfwGetKey(window.window(), GLFW_KEY_R);
@@ -2894,6 +2934,18 @@ namespace SOULKAN_TEST_NAMESPACE
 				std::cout << "Switched to triangle pipeline" << std::endl;
 			}
 
+			state = glfwGetMouseButton(window.window(), GLFW_MOUSE_BUTTON_RIGHT);
+			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
+			{
+				glfwGetCursorPos(window.window(), &lastMouseX, &lastMouseY);
+			}
+
+			state = glfwGetMouseButton(window.window(), GLFW_MOUSE_BUTTON_RIGHT);
+			if (state == GLFW_RELEASE)
+			{
+				lastMouseX = -1;
+				lastMouseY = -1;
+			}
 			//Switch to wireframe pipeline when pressing w
 			state = glfwGetKey(window.window(), GLFW_KEY_Z);
 			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 1)
@@ -2909,7 +2961,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			{
 				lastInputTime = glfwGetTime();
 
-				camPos.x += 0.2f;
+				cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraMovementSpeed;
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_D);
@@ -2917,7 +2969,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			{
 				lastInputTime = glfwGetTime();
 
-				camPos.x -= 0.2f;
+				cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraMovementSpeed;
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_S);
@@ -2925,7 +2977,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			{
 				lastInputTime = glfwGetTime();
 
-				camPos.z -= 0.2f;
+				cameraPos -= cameraFront * cameraMovementSpeed;
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_W);
@@ -2933,7 +2985,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			{
 				lastInputTime = glfwGetTime();
 
-				camPos.z += 0.2f;
+				cameraPos += cameraFront * cameraMovementSpeed;
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_SPACE);
@@ -2941,7 +2993,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			{
 				lastInputTime = glfwGetTime();
 
-				camPos.y -= 0.2f;
+				cameraPos += cameraUp * cameraMovementSpeed;
 			}
 
 			state = glfwGetKey(window.window(), GLFW_KEY_LEFT_SHIFT);
@@ -2949,17 +3001,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			{
 				lastInputTime = glfwGetTime();
 
-				camPos.y += 0.2f;
-			}
-
-			state = glfwGetKey(window.window(), GLFW_KEY_C);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.5)
-			{
-				lastInputTime = glfwGetTime();
-
-				offsetSize = offsetSize.first == offsetSize1.first ? offsetSize2 : offsetSize1;
-				//bufferAddresses[2] = (bufferAddresses[2] == monkey1MatOffset) ? moai1MatOffset: monkey1MatOffset;
-				//std::cout << std::format("Switched to model at offset {} of size {} with mat at offset {}", offsetSize.first, offsetSize.second, bufferAddresses[2]) << std::endl;
+				cameraPos -= cameraUp * cameraMovementSpeed;
 			}
 
 			//DRAWING
@@ -2982,6 +3024,7 @@ namespace SOULKAN_TEST_NAMESPACE
 
 			commandBuffer.vk().bindPipeline(vk::PipelineBindPoint::eGraphics, boundPipeline);
 
+			//MeshInstance drawing
 			for (auto& meshInstance : meshInstances)
 			{
 				pushConstants[2] = meshInstance.matrixView().offset();
