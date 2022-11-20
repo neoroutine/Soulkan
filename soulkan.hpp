@@ -2664,6 +2664,171 @@ namespace SOULKAN_NAMESPACE
 		BufferView meshView_;
 		BufferView matrixView_;
 	};
+
+	class Camera
+	{
+	public:
+		Camera(ref<Window> window, glm::vec3 position, float fov = 70.f, float movementSpeed = 10.f, float sensitivity = 0.5f)
+			: window_(window), position_(position), fov_(fov), movementSpeed_(movementSpeed), sensitivity_(sensitivity), 
+			projection_(glm::perspective(glm::radians(fov_), (float)(window_.get().width() / window_.get().height()), 0.1f, 200.0f))
+		{
+			projection_[1][1] *= -1;
+		}
+
+		void update(float deltaTime)
+		{
+			updatePosition(deltaTime);
+			updateMousePosition();
+			updateAngle();
+		}
+
+		glm::mat4 projection()
+		{
+			return projection_;
+		}
+
+		void setAspectRatio(float aspectRatio)
+		{
+			projection_ = glm::perspective(glm::radians(fov_), aspectRatio, 0.1f, 200.0f);
+			projection_[1][1] *= -1;
+		}
+
+		glm::mat4 view()
+		{
+			return view_;
+		}
+		
+	private:
+		//TODO:Check vulkan coord system
+		glm::vec3 front_{ 0.f, 0.f, 1.f }; //+z is front
+		glm::vec3 up_{ 0.f, 1.f, 0.f }; //+y is up
+		glm::vec3 right_{ 1.f, 0.f, 0.f }; //+x is right
+		
+		float yaw_ = -90.f; //Left/Right
+		float pitch_ = 0.f; //Up/Down
+
+		ref<Window> window_;
+
+		glm::vec3 position_;
+
+		float fov_;
+		float movementSpeed_;
+		float sensitivity_;
+
+		double lastMouseX_{0};
+		double lastMouseY_{0};
+		bool queryClickedPos = true;
+
+		glm::mat4 projection_;
+		glm::mat4 view_;
+
+		void updatePosition(float deltaTime)
+		{
+			//WASD movement
+			int state = glfwGetKey(window_.get().window(), GLFW_KEY_W);
+			if (state == GLFW_PRESS)
+			{
+				position_ += front_ * movementSpeed_ * deltaTime;
+			}
+
+			state = glfwGetKey(window_.get().window(), GLFW_KEY_A);
+			if (state == GLFW_PRESS)
+			{
+
+				position_ -= glm::normalize(glm::cross(front_, up_)) * movementSpeed_ * deltaTime;
+			}
+
+			state = glfwGetKey(window_.get().window(), GLFW_KEY_S);
+			if (state == GLFW_PRESS)
+			{
+				position_ -= front_ * movementSpeed_ * deltaTime;
+			}
+
+			state = glfwGetKey(window_.get().window(), GLFW_KEY_D);
+			if (state == GLFW_PRESS)
+			{
+
+				position_ += glm::normalize(glm::cross(front_, up_)) * movementSpeed_ * deltaTime;
+			}
+
+			//UP and DOWN
+			state = glfwGetKey(window_.get().window(), GLFW_KEY_SPACE);
+			if (state == GLFW_PRESS)
+			{
+				position_ += up_ * movementSpeed_ * deltaTime;
+			}
+
+			state = glfwGetKey(window_.get().window(), GLFW_KEY_LEFT_SHIFT);
+			if (state == GLFW_PRESS)
+			{
+				position_ -= up_ * movementSpeed_ * deltaTime;
+			}
+
+			view_ = glm::lookAt(position_, position_ + front_, up_);
+		}
+
+		void updateMousePosition()
+		{
+			int state = glfwGetMouseButton(window_.get().window(), GLFW_MOUSE_BUTTON_RIGHT);
+			if (state == GLFW_RELEASE)
+			{
+				lastMouseX_ = -1;
+				lastMouseY_ = -1;
+
+				queryClickedPos = true;
+			}
+
+			if (!queryClickedPos) 
+			{
+				return;
+			}
+
+			state = glfwGetMouseButton(window_.get().window(), GLFW_MOUSE_BUTTON_RIGHT);
+			if (state == GLFW_PRESS)
+			{
+				glfwGetCursorPos(window_.get().window(), &lastMouseX_, &lastMouseY_);
+
+				queryClickedPos = false;
+			}
+		}
+
+		//Returns a projection-view matrix of the scene, can then be multiplied by model matrix 
+		void updateAngle()
+		{
+
+			if (lastMouseX_ == -1 && lastMouseY_ == -1)
+			{
+				return;
+			}
+
+			double currentMouseX = -1;
+			double currentMouseY = -1;
+
+			glfwGetCursorPos(window_.get().window(), &currentMouseX, &currentMouseY);
+
+
+			float deltaX = currentMouseX - lastMouseX_;
+			float deltaY = lastMouseY_ - currentMouseY;
+
+			yaw_ = std::fmod(yaw_ + (deltaX * sensitivity_), 360.f); //Yaw can get big after adding lots of time, floating point imprecision can make movement janky, so we mod it out
+			pitch_ += (deltaY)*sensitivity_;
+
+			if (pitch_ > 89.f) { pitch_ = 89.f; }
+			if (pitch_ < -89.f) { pitch_ = -89.f; }
+
+			glm::vec3 newCamFront;
+			newCamFront.x = cos(glm::radians(yaw_)) * cos(glm::radians(pitch_));
+			newCamFront.y = sin(glm::radians(pitch_));
+			newCamFront.z = sin(glm::radians(yaw_)) * cos(glm::radians(pitch_));
+			front_ = glm::normalize(newCamFront);
+
+			lastMouseX_ = currentMouseX;
+			lastMouseY_ = currentMouseY;
+
+			view_ = glm::lookAt(position_, position_ + front_, up_);
+
+		}
+	};
 }
 
 
@@ -2807,38 +2972,33 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipelineTmp(device);
 		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eLine, swapchain.extent(), swapchain.imageFormat());
 
+		SOULKAN_NAMESPACE::Camera camera(window, glm::vec3(0.f, 0.f, 0.f));
+
 		vk::Pipeline boundPipeline = solidPipeline.vk();
 		vk::PipelineLayout boundPipelineLayout = solidPipeline.layout();
-
-		glm::vec3 cameraFront{ 0.f, 0.f, 1.f };
-		glm::vec3 cameraUp{ 0.f, 1.f, 0.f };
-		glm::vec3 cameraRight{ 1.f, 0.f, 0.f };
-
-		glm::vec3 cameraPos{ 0.f,0.f,-2.f };
-		float cameraFov = 70.f;
-		float cameraMovementSpeed = 0.5f;
-		float cameraSensitivity = 0.5f;
-
-		float cameraYaw = -90.f;
-		float cameraPitch = 0.f;
-
-
-		glm::mat4 projection = glm::perspective(glm::radians(cameraFov), 1700.f / 900.f, 0.1f, 200.0f);
-		projection[1][1] *= -1;
 
 
 		float rotationSpeed = 0.3f;
 
 		uint32_t i = 0;
-		double lastInputTime = 0;
-		double LastMouseInputTime = 0;
 		std::atomic<bool> status(false);
 
 		double lastMouseX = windowWidth / 2.f;
 		double lastMouseY = windowHeight / 2.f;
 
+		float lastInputTime = 0;
+		float currentFrame = glfwGetTime();
+		float lastFrame = currentFrame;
+		float deltaTime = 0;
+
+		float aspectRatio = 1700.f / 900.f;
+
 		while (!glfwWindowShouldClose(window.window()))
 		{
+			currentFrame = glfwGetTime();
+			deltaTime = currentFrame - lastFrame;
+			lastFrame = currentFrame;
+
 			//Checking if shader recompilation and pipeline rebuilding has been triggered and finished
 			if (status)
 			{
@@ -2856,35 +3016,17 @@ namespace SOULKAN_TEST_NAMESPACE
 			glfwPollEvents();
 			window.rename(std::format("Hello ({})", i));
 
-			if (lastMouseX != -1 && lastMouseY != -1 && glfwGetTime() > LastMouseInputTime + 0.01)
-			{
-				LastMouseInputTime = glfwGetTime();
-
-				double currentMouseX = -1;
-				double currentMouseY = -1;
-
-				glfwGetCursorPos(window.window(), &currentMouseX, &currentMouseY);
-				float xOffset = currentMouseX - lastMouseX;
-				cameraYaw = std::fmod(cameraYaw + (xOffset * cameraSensitivity), 360.f); //Yaw can get big after adding lots of time, floating point imprecision can make movement janky, so we mod it out
-				cameraPitch += (lastMouseY - currentMouseY) * cameraSensitivity;
-				
-				if (cameraPitch > 89.f) { cameraPitch = 89.f; }
-				if (cameraPitch < -89.f) { cameraPitch = -89.f; }
-
-				glm::vec3 newCamFront;
-				newCamFront.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
-				newCamFront.y = sin(glm::radians(cameraPitch));
-				newCamFront.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
-				cameraFront = glm::normalize(newCamFront);
-
-				lastMouseX = currentMouseX;
-				lastMouseY = currentMouseY;
-			}
+			camera.update(deltaTime);
 
 			//model rotation
 			glm::mat4 model = glm::rotate(glm::mat4{ 1.0f }, glm::radians(i * rotationSpeed), glm::vec3(0, 1, 0));
 			//glm::mat4 view = glm::translate(glm::mat4(1.f), camPos);
-			glm::mat4 view = glm::lookAt(cameraPos, cameraPos + cameraFront, cameraUp);
+
+			camera.setAspectRatio(aspectRatio);
+			glm::mat4 projection = camera.projection();
+			std::cout << "Aspect Ratio: " << aspectRatio << std::endl;
+
+			glm::mat4 view = camera.view();
 
 			//calculate final mesh matrix
 			glm::mat4 meshMatrix = projection * view * glm::mat4{ 1.0f };
@@ -2934,18 +3076,6 @@ namespace SOULKAN_TEST_NAMESPACE
 				std::cout << "Switched to triangle pipeline" << std::endl;
 			}
 
-			state = glfwGetMouseButton(window.window(), GLFW_MOUSE_BUTTON_RIGHT);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
-			{
-				glfwGetCursorPos(window.window(), &lastMouseX, &lastMouseY);
-			}
-
-			state = glfwGetMouseButton(window.window(), GLFW_MOUSE_BUTTON_RIGHT);
-			if (state == GLFW_RELEASE)
-			{
-				lastMouseX = -1;
-				lastMouseY = -1;
-			}
 			//Switch to wireframe pipeline when pressing w
 			state = glfwGetKey(window.window(), GLFW_KEY_Z);
 			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 1)
@@ -2956,53 +3086,18 @@ namespace SOULKAN_TEST_NAMESPACE
 				std::cout << "Switched to wireframe pipeline" << std::endl;
 			}
 
-			state = glfwGetKey(window.window(), GLFW_KEY_A);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) 
+			state = glfwGetKey(window.window(), GLFW_KEY_I);
+			if (state == GLFW_PRESS)
 			{
-				lastInputTime = glfwGetTime();
-
-				cameraPos -= glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraMovementSpeed;
+				aspectRatio += 0.005f;
 			}
 
-			state = glfwGetKey(window.window(), GLFW_KEY_D);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
+			state = glfwGetKey(window.window(), GLFW_KEY_J);
+			if (state == GLFW_PRESS)
 			{
-				lastInputTime = glfwGetTime();
-
-				cameraPos += glm::normalize(glm::cross(cameraFront, cameraUp)) * cameraMovementSpeed;
+				aspectRatio -= 0.005f;
 			}
 
-			state = glfwGetKey(window.window(), GLFW_KEY_S);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
-			{
-				lastInputTime = glfwGetTime();
-
-				cameraPos -= cameraFront * cameraMovementSpeed;
-			}
-
-			state = glfwGetKey(window.window(), GLFW_KEY_W);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
-			{
-				lastInputTime = glfwGetTime();
-
-				cameraPos += cameraFront * cameraMovementSpeed;
-			}
-
-			state = glfwGetKey(window.window(), GLFW_KEY_SPACE);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01) 
-			{
-				lastInputTime = glfwGetTime();
-
-				cameraPos += cameraUp * cameraMovementSpeed;
-			}
-
-			state = glfwGetKey(window.window(), GLFW_KEY_LEFT_SHIFT);
-			if (state == GLFW_PRESS && glfwGetTime() > lastInputTime + 0.01)
-			{
-				lastInputTime = glfwGetTime();
-
-				cameraPos -= cameraUp * cameraMovementSpeed;
-			}
 
 			//DRAWING
 			device.waitFence(renderFence);
