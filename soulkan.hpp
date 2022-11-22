@@ -6,11 +6,17 @@
 #define SOULKAN_TEST_NAMESPACE skt
 
 /*Vulkan/GLFW includes*/
+#define VMA_STATIC_VULKAN_FUNCTIONS 0
+#define VMA_DYNAMIC_VULKAN_FUNCTIONS 1
 #define VMA_IMPLEMENTATION
 #include<vk_mem_alloc.h>
 
-#include <vulkan/vulkan.hpp>
-#include <shaderc/shaderc.hpp>
+#define VULKAN_HPP_DISPATCH_LOADER_DYNAMIC 1
+#define VULKAN_HPP_NO_SPACESHIP_OPERATOR
+#include <vulkan\vulkan.hpp>
+VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
+
+#include <shaderc\shaderc.hpp>
 #include <GLFW/glfw3.h>
 #define GLFW_INCLUDE_VULKAN
 
@@ -25,8 +31,8 @@
 #include <atomic>
 
 /*GLM includes*/
-#include <glm/glm.hpp>
-#include <glm/gtx/transform.hpp>
+#include <glm.hpp>
+#include <gtx/transform.hpp>
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include <tiny_obj_loader.h>
@@ -37,12 +43,12 @@
  *coordef MAYB = Something worth researching, not TODO worthy as it may not be worth implementing
  */
 
-/*MAYB: Implement a VS extension summing up the different INFO / TODO / MAYB / ... comments in some kind of UI
- *Either one simple interface listing every "caption comments" or many distinct interfaces listing each type of "caption comment"
- */
+ /*MAYB: Implement a VS extension summing up the different INFO / TODO / MAYB / ... comments in some kind of UI
+  *Either one simple interface listing every "caption comments" or many distinct interfaces listing each type of "caption comment"
+  */
 
 
-/*Helpful macros*/
+  /*Helpful macros*/
 #define INDEX(x) (static_cast<size_t>(x))
 
 #define VK_API_VERSION_FULL(packedVersion) (std::format("{}.{}.{}", VK_API_VERSION_MAJOR(packedVersion),  \
@@ -74,6 +80,10 @@
    }                                                                                                                                                              \
 
 #define DEBUGOUT(x) std::cout << "Line " << __LINE__ << " in (" << __FILE__ << ") : " << #x << " = " << x << std::endl;
+
+vk::DynamicLoader dynamicLoader;
+PFN_vkGetInstanceProcAddr vkGetInstanceProcAddress = dynamicLoader.getProcAddress<PFN_vkGetInstanceProcAddr>("vkGetInstanceProcAddr");
+PFN_vkGetDeviceProcAddr vkGetDeviceProcAddress = dynamicLoader.getProcAddress<PFN_vkGetDeviceProcAddr>("vkGetDeviceProcAddr");
 
 //Implement appropriate Copy/Move constructors : important
 //Keep in mind smart ptrs : important
@@ -235,6 +245,8 @@ namespace SOULKAN_NAMESPACE
 	public:
 		Instance(bool validation)
 		{
+			dispatcherInit();
+
 			uint32_t glfwExtensionCount = 0;
 			const char** glfwExtensions = nullptr;
 			glfwExtensions = glfwGetRequiredInstanceExtensions(&glfwExtensionCount);
@@ -278,9 +290,11 @@ namespace SOULKAN_NAMESPACE
 
 			instance_ = vk::createInstance(createInfo);
 
+			VULKAN_HPP_DEFAULT_DISPATCHER.init(instance_);
+
 			if (validation)
 			{
-				auto dynamicLoader = vk::DispatchLoaderDynamic(instance_, vkGetInstanceProcAddr);
+				auto dynamicLoader = vk::DispatchLoaderDynamic(instance_, vkGetInstanceProcAddress);
 				VK_CHECK(instance_.createDebugUtilsMessengerEXT(&debugCI, nullptr, &debugMessenger_, dynamicLoader));
 			}
 		}
@@ -317,7 +331,7 @@ namespace SOULKAN_NAMESPACE
 		{
 			if (destroyed_) { return; }
 			instance_.destroySurfaceKHR(surface_);
-			auto dynamicLoader = vk::DispatchLoaderDynamic(instance_, vkGetInstanceProcAddr);
+			auto dynamicLoader = vk::DispatchLoaderDynamic(instance_, vkGetInstanceProcAddress);
 			instance_.destroyDebugUtilsMessengerEXT(debugMessenger_, nullptr, dynamicLoader);
 			instance_.destroy();
 			destroyed_ = true;
@@ -458,6 +472,11 @@ namespace SOULKAN_NAMESPACE
 		std::vector<vk::PhysicalDevice> suitables_ = {};
 		vk::PhysicalDevice best_ = nullptr;
 
+		void dispatcherInit()
+		{
+			VULKAN_HPP_DEFAULT_DISPATCHER.init(vkGetInstanceProcAddress);
+		}
+
 		static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 			VkDebugUtilsMessageTypeFlagsEXT messageType,
 			const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
@@ -590,6 +609,8 @@ namespace SOULKAN_NAMESPACE
 
 			//Building
 			VK_CHECK(physicalDevice_.createDevice(&deviceCreateInfo, nullptr, &device_));
+
+			VULKAN_HPP_DEFAULT_DISPATCHER.init(device_);
 		}
 
 		//TODO:Implement move constructors
@@ -1908,6 +1929,12 @@ namespace SOULKAN_NAMESPACE
 			createInfo.instance = instance_.get().vk();
 			createInfo.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
+			VmaVulkanFunctions vulkanFunctions = {};
+			vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddress;
+			vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddress;
+
+			createInfo.pVulkanFunctions = &vulkanFunctions;
+
 			VK_CHECK(vk::Result(vmaCreateAllocator(&createInfo, &allocator_)));
 		}
 
@@ -3024,7 +3051,6 @@ namespace SOULKAN_TEST_NAMESPACE
 
 			camera.setAspectRatio(aspectRatio);
 			glm::mat4 projection = camera.projection();
-			std::cout << "Aspect Ratio: " << aspectRatio << std::endl;
 
 			glm::mat4 view = camera.view();
 
