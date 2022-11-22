@@ -2542,6 +2542,8 @@ namespace SOULKAN_NAMESPACE
 			transferCommandBuffer_.end();
 
 			transferQueue_.submit(transferCommandBuffer_, transferFence_);
+
+			stagingVoidStart_ = 0; //Staging buffer can be filled up from the start again
 		}
 
 		void remove(std::string name)
@@ -2563,6 +2565,25 @@ namespace SOULKAN_NAMESPACE
 		vk::DeviceAddress address()
 		{
 			return Buffer::address();
+		}
+
+
+		//Size of total freeSpace
+		vk::DeviceSize voidSize()
+		{
+			vk::DeviceSize total = 0;
+
+			for (auto& v : voids_)
+			{
+				total += v.second;
+			}
+
+			return total;
+		}
+
+		vk::DeviceSize stagingVoidSize()
+		{
+			return stagingBuffer_.size() - stagingVoidStart_;
 		}
 
 	protected:
@@ -3068,6 +3089,7 @@ namespace SOULKAN_TEST_NAMESPACE
 			meshMatrixBuffer.add("rotatingSomewhere4", &meshRotatingMatrix4, sizeof(meshRotatingMatrix4));
 
 			meshMatrixBuffer.upload(true);
+
 
 
 			//Shader recompilation and graphics pipeline rebuilding when pressing R
