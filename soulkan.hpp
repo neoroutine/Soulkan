@@ -570,9 +570,15 @@ namespace SOULKAN_NAMESPACE
 
 			//Extensions
 			enabledExtensions_.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);//INFO:For presenting to the screen
-			enabledExtensions_.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);//INFO:Avoid setting up Renderpasses and framebuffers
+
 			enabledExtensions_.push_back(VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME);//INFO:New pipeline stages and synchronization structures/commands
+
+			enabledExtensions_.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);//INFO:Avoid setting up Renderpasses and framebuffers
+
 			enabledExtensions_.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);//INFO:Query 64 bit buffer address to use it in shaders
+
+			enabledExtensions_.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);//INFO:Required for descriptor buffer
+			enabledExtensions_.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);//INFO:Descriptors are backed by buffers
 
 
 			std::vector<const char*> enabledExtensionsC;
@@ -590,6 +596,7 @@ namespace SOULKAN_NAMESPACE
 			vk::PhysicalDeviceVulkan12Features features12 = {};
 			features12.bufferDeviceAddress = true;
 			features12.bufferDeviceAddressCaptureReplay = true;
+			features12.descriptorIndexing = true;
 
 			vk::PhysicalDeviceVulkan13Features features13 = {};
 			features13.dynamicRendering = true;
