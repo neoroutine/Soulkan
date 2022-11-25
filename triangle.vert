@@ -3,21 +3,23 @@
 #extension GL_KHR_vulkan_glsl : enable
 #extension GL_EXT_buffer_reference : enable
 #extension GL_ARB_gpu_shader_int64 : enable
+#extension GL_EXT_scalar_block_layout : enable
 
 struct Vertex
 {
-	vec4 position;
-	vec4 color;
+	vec3 position;
+	vec3 normal;
+	vec2 uv;
 };
 
-layout(buffer_reference, std430, buffer_reference_align = 32) readonly buffer Vertices
+layout(buffer_reference, scalar, buffer_reference_align = 32) readonly buffer Vertices
 {
 	Vertex v[];
 };
 
 layout(buffer_reference, std430, buffer_reference_align = 64) readonly buffer Matrices
 {
-	mat4 meshMatrices[];//Transform into array and use glBaseInstance to use each object own's matrix
+	mat4 meshMatrices[];
 };
 
 layout(push_constant, std430) uniform Constants
@@ -31,22 +33,14 @@ layout (location = 0) out vec4 outColor;
 
 void main()
 {
-	//const array of positions for the triangle
-	const vec4 positions[3] = vec4[3](
-		vec4(1.f, 1.f, 0.f, 1.f),
-		vec4(-1.f, 1.f, 0.f, 1.f),
-		vec4(0.f, -1.f, 0.f, 1.f)
-	);
-
-	const vec4 colors[3] = vec4[3](
-		vec4(1.f, 0.f, 0.f, 1.f),
-		vec4(0.f, 1.f, 0.f, 1.f),
-		vec4(0.f, 0.f, 1.f, 1.f)
-	);
-
 	//output the position of each vertex
-	gl_Position = constants.matrices.meshMatrices[uint(constants.matrixIndex)] * constants.vertices.v[gl_BaseInstance + gl_VertexIndex].position;
+	mat4 currentMatrix = constants.matrices.meshMatrices[uint(constants.matrixIndex)];
 
-	//output normal as color
-	outColor = constants.vertices.v[gl_BaseInstance + gl_VertexIndex].color;
+	vec4 vertexPosition = vec4(constants.vertices.v[gl_BaseInstance + gl_VertexIndex].position, 1.f);
+	vec4 vertexColor = vec4(constants.vertices.v[gl_BaseInstance + gl_VertexIndex].normal, 1.f);
+
+	gl_Position = currentMatrix * vertexPosition;
+
+	//output normal as color color
+	outColor = vertexColor;
 }

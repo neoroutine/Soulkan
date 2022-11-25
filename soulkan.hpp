@@ -34,8 +34,13 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <glm.hpp>
 #include <gtx/transform.hpp>
 
+/*OBJ loading*/
 #define TINYOBJLOADER_IMPLEMENTATION
 #include <tiny_obj_loader.h>
+
+/*Image loading*/
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 /*Informations about comments and their "captions" (INFO, TODO, ...):
  *coordef INFO = A purely informational and context relevant comment
@@ -2003,7 +2008,7 @@ namespace SOULKAN_NAMESPACE
 	class Buffer : public Destroyable
 	{
 	public:
-		Buffer(ref<Device> device, ref<Allocator> allocator, vk::Flags<vk::BufferUsageFlagBits> usage, vk::DeviceSize size, bool mappable = false) 
+		Buffer(ref<Device> device, ref<Allocator> allocator, vk::Flags<vk::BufferUsageFlagBits> usage, vk::DeviceSize size, bool mappable = false, bool systemMemory = false) 
 			: device_(device), allocator_(allocator), size_(size), mappable_(mappable)
 		{
 			vk::BufferCreateInfo createInfo = {};
@@ -2016,6 +2021,12 @@ namespace SOULKAN_NAMESPACE
 
 			VmaAllocationCreateInfo allocInfo = {};
 			allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+			if (systemMemory)
+			{
+				allocInfo.usage = VMA_MEMORY_USAGE_CPU_ONLY;//TODO:Later pick cpu memory only when device local host visible memory is not enough
+				allocInfo.preferredFlags = VK_MEMORY_PROPERTY_HOST_COHERENT_BIT; //Prefer system memory
+			}
+
 			if (mappable)
 			{
 				allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
@@ -2093,7 +2104,7 @@ namespace SOULKAN_NAMESPACE
 
 		void upload(void *data, size_t size, uint32_t offset = 0)
 		{
-			if (!mappable_) { KILL("Trying to map to a buffer that is not mapapble"); }
+			if (!mappable_) { KILL("Trying to map to a buffer that is not mappable"); }
 			
 			char* offsetDst = static_cast<char*>(mappedMemory) + offset;//We assume that sizeof(char) = 1
 
@@ -2119,6 +2130,11 @@ namespace SOULKAN_NAMESPACE
 		vk::Buffer vk()
 		{
 			return buffer_;
+		}
+
+		VmaAllocation allocation()
+		{
+			return allocation_;
 		}
 
 	protected:
@@ -2257,10 +2273,12 @@ namespace SOULKAN_NAMESPACE
 	};
 
 	//Copyable
+	//TODO:Should become vec3 position, vec3 normal, vec3 uv
 	struct Vertex
 	{
-		glm::vec4 position;
-		glm::vec4 color;
+		glm::vec3 position;
+		glm::vec3 normal;
+		glm::vec2 uv;
 	};
 
 	//Non copyable movable
@@ -2271,52 +2289,6 @@ namespace SOULKAN_NAMESPACE
 			: name_(name), vertices_(vertices)
 		{
 			
-		}
-
-		static Mesh triangleMesh()
-		{
-			Vertex bottomRight{ .position = glm::vec4(1.f, 1.f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
-
-			Vertex bottomLeft{ .position = glm::vec4(-1.f, 1.f, 0.0f,  1.f), .color = glm::vec4(0.f, 1.f, 0.f, 1.f) };
-
-			Vertex top{ .position = glm::vec4(0.f, -1.f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
-
-			return Mesh("triangle", std::vector<Vertex>{bottomRight, bottomLeft, top});
-		}
-
-		static Mesh squareMesh()
-		{
-			Vertex bottomRight{ .position = glm::vec4(0.5f, 0.5f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
-			Vertex bottomLeft{ .position = glm::vec4(-0.5f, 0.5f, 0.0f,  1.f), .color = glm::vec4(0.f, 1.f, 0.f, 1.f) };
-			Vertex topLeft{ .position = glm::vec4(-0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
-
-			Vertex topRight{ .position = glm::vec4(0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(1.f, 1.f, 1.f, 1.f) };
-
-			return Mesh("square", std::vector<Vertex>{bottomRight, bottomLeft, topLeft,
-				bottomRight, topLeft, topRight});
-		}
-
-		static Mesh heartMesh()
-		{
-			Vertex center{ .position = glm::vec4(0.0f, 0.0f, 0.0f, 1.f), .color = glm::vec4(1.f, 1.f, 1.f, 1.f) };
-
-			Vertex la{ .position = glm::vec4(-0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
-			Vertex lb{ .position = glm::vec4(-0.25f, -0.5f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
-			Vertex lc{ .position = glm::vec4(-0.5f, 0.0f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
-
-			Vertex down{ .position = glm::vec4(0.f, 1.f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
-
-			Vertex ra{ .position = glm::vec4(0.5f, -0.5f, 0.0f,  1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
-			Vertex rb{ .position = glm::vec4(0.25f, -0.5f, 0.0f,  1.f), .color = glm::vec4(0.f, 0.f, 1.f, 1.f) };
-			Vertex rc{ .position = glm::vec4(0.5f, 0.0f, 0.0f, 1.f), .color = glm::vec4(1.f, 0.f, 0.f, 1.f) };
-
-
-			return Mesh("heart", std::vector<Vertex>{center, la, lb,//Left half
-				center, lc, la,
-				center, down, lc,
-				center, ra, rb,//Right half
-				center, rc, ra,
-				center, down, rc});
 		}
 
 		static Mesh objMesh(std::string filename)
@@ -2368,12 +2340,6 @@ namespace SOULKAN_NAMESPACE
 						vertex.position.x = vx;
 						vertex.position.y = vy;
 						vertex.position.z = vz;
-						vertex.position.w = 1.f;
-
-						vertex.color.x = 1.f;
-						vertex.color.y = 0.f;
-						vertex.color.z = 1.f;
-						vertex.color.w = 1.f;
 
 						if (index.normal_index >= 0) //Is there normal data
 						{
@@ -2381,9 +2347,9 @@ namespace SOULKAN_NAMESPACE
 							tinyobj::real_t ny = attrib.normals[3 * index.normal_index + 1];
 							tinyobj::real_t nz = attrib.normals[3 * index.normal_index + 2];
 
-							vertex.color.x = nx;
-							vertex.color.y = ny;
-							vertex.color.z = nz;
+							vertex.normal.x = nx;
+							vertex.normal.y = ny;
+							vertex.normal.z = nz;
 						}
 
 						vertices.push_back(vertex);
@@ -2422,13 +2388,13 @@ namespace SOULKAN_NAMESPACE
 	
 	//Small mappable buffer
 	//Non copyable movable
+	//TODO:Use prefer cpu ram to make sure staging is on system memory
 	class StagingBuffer : public Buffer
 	{
 	public:
-		StagingBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize size)
-			: Buffer(device, allocator, (vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc),
-				size > 200'000'000 ? 200'000'000 : size, true), //Staging buffer cannot be bigger than 200MB
-			  size_(size > 200'000'000 ? 200'000'000 : size)
+		StagingBuffer(ref<Device> device, ref<Allocator> allocator, vk::DeviceSize size, bool systemMemory = false)
+			: Buffer(device, allocator, (vk::BufferUsageFlagBits::eStorageBuffer | vk::BufferUsageFlagBits::eTransferSrc), size, true, systemMemory), //Staging buffer should not be bigger than 200MB if on DEVICE_LOCAL memory
+			  size_(size)
 		{}
 
 		vk::DeviceSize size()
@@ -2720,6 +2686,145 @@ namespace SOULKAN_NAMESPACE
 		BufferView matrixView_;
 	};
 
+	class Image : Destroyable
+	{
+	public:
+		Image(ref<Device> device, ref<Allocator> allocator, std::string filename, vk::Flags<vk::ImageUsageFlagBits> usage)
+			: allocator_(allocator)
+		{
+			//Loading
+			int width, height, channels = 0;
+
+			stbi_uc* pixels = stbi_load(filename.c_str(), &width, &height, &channels, STBI_rgb_alpha);
+
+			if (pixels == nullptr)
+			{
+				KILL(std::format("Could not load following image : {}", filename));
+			}
+
+			vk::DeviceSize imageSize = width * height * 4; //4 byte per pixel
+
+			vk::Format imageFormat = vk::Format::eR8G8B8A8Srgb;
+
+			StagingBuffer staging(device, allocator, imageSize, true);
+
+			staging.upload(pixels, imageSize);
+
+			stbi_image_free(pixels);
+
+			//Creating
+
+			vk::Extent3D imageExtent = {};
+
+			imageExtent.width = width;
+			imageExtent.height = height;
+			imageExtent.depth = 1;
+
+			vk::ImageCreateInfo imageCreateInfo = {};
+			imageCreateInfo.imageType = vk::ImageType::e2D;
+
+			imageCreateInfo.format = imageFormat;
+			imageCreateInfo.extent = imageExtent;
+
+			imageCreateInfo.usage = usage | vk::ImageUsageFlagBits::eTransferDst;
+
+			imageCreateInfo.mipLevels = 1;
+			imageCreateInfo.arrayLayers = 1;
+
+			imageCreateInfo.samples = vk::SampleCountFlagBits::e1;
+			imageCreateInfo.tiling = vk::ImageTiling::eOptimal;
+
+			VkImageCreateInfo vkImageCreateInfo = static_cast<VkImageCreateInfo>(imageCreateInfo);
+
+			VmaAllocationCreateInfo allocationCreateInfo = {};
+			allocationCreateInfo.usage = VMA_MEMORY_USAGE_AUTO; //TODO:Should be GPU preferred
+
+			VkImage vkImage;
+
+			vmaCreateImage(allocator.get().vma(), &vkImageCreateInfo, &allocationCreateInfo, &vkImage, &allocation_, nullptr);
+
+			image_ = vk::Image(vkImage);
+
+			//Converting to copy reading layout
+			CommandPool graphicsCommandPool(device, device.get().queueIndex(QueueFamilyCapability::GRAPHICS));
+			CommandBuffer graphicsCommandBuffer = graphicsCommandPool.allocate();
+
+			Fence fence(device);
+			device.get().waitFence(fence);
+			device.get().resetFence(fence);
+
+			Queue graphicsQueue = device.get().queue(QueueFamilyCapability::GRAPHICS, 0);//TODO:Hardcoded queue index, should change later, currently 0 is used for local buffers and this
+
+			graphicsCommandBuffer.begin();
+
+			graphicsCommandBuffer.imageLayoutTransition(vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, image_,
+														vk::PipelineStageFlagBits2::eNone, vk::AccessFlagBits2::eNone,
+															vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite);
+
+			vk::BufferImageCopy2 copyRegion = {};
+			copyRegion.bufferOffset = 0;
+			copyRegion.bufferRowLength = 0;
+			copyRegion.bufferImageHeight = 0;
+
+			copyRegion.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+			copyRegion.imageSubresource.mipLevel = 0;
+			copyRegion.imageSubresource.baseArrayLayer = 0;
+			copyRegion.imageSubresource.layerCount = 1;
+			copyRegion.imageExtent = imageExtent;
+
+			vk::CopyBufferToImageInfo2 copy = {};
+			copy.regionCount = 1;
+			copy.pRegions = &copyRegion;
+			copy.srcBuffer = staging.vk();
+			copy.dstImage = image_;
+			copy.dstImageLayout = vk::ImageLayout::eTransferDstOptimal;
+
+			graphicsCommandBuffer.vk().copyBufferToImage2(&copy);
+
+			graphicsCommandBuffer.imageLayoutTransition(vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal, image_,
+				vk::PipelineStageFlagBits2::eTransfer, vk::AccessFlagBits2::eTransferWrite,
+				vk::PipelineStageFlagBits2::eFragmentShader, vk::AccessFlagBits2::eShaderRead);
+
+			graphicsCommandBuffer.end();
+			graphicsQueue.submit(graphicsCommandBuffer, fence);
+
+		}
+	
+		void destroy()
+		{
+			if (destroyed_) { return; }
+
+			vmaDestroyImage(allocator_.get().vma(), image_, allocation_);
+
+			destroyed_ = true;
+		}
+
+		~Image()
+		{
+			if (manual_) { return; }
+			destroy();
+		}
+
+		/*void destroy()
+		{
+			if (destroyed_) { return; }
+			if (mappable_) { vmaUnmapMemory(allocator_.get().vma(), allocation_); }
+			vmaDestroyBuffer(allocator_.get().vma(), buffer_, allocation_);
+			destroyed_ = true;
+		}
+
+		~Buffer()
+		{
+			if (manual_) { return; }
+			destroy();
+		}*/
+	
+	private:
+		vk::Image image_;
+		ref<Allocator> allocator_;
+		VmaAllocation allocation_;
+	};
+
 	class Camera
 	{
 	public:
@@ -2937,6 +3042,8 @@ namespace SOULKAN_TEST_NAMESPACE
 		glfwInit();
 		dq.push([]() { glfwTerminate(); });
 
+		std::cout << "Sizeof(Vertex) = " << sizeof(SOULKAN_NAMESPACE::Vertex) << std::endl;
+
 		uint32_t windowWidth = 1200;
 		uint32_t windowHeight = 800;
 
@@ -3032,6 +3139,7 @@ namespace SOULKAN_TEST_NAMESPACE
 		vk::Pipeline boundPipeline = solidPipeline.vk();
 		vk::PipelineLayout boundPipelineLayout = solidPipeline.layout();
 
+		SOULKAN_NAMESPACE::Image lostEmpireImage(device, allocator, "lost_empire-RGBA.png", vk::ImageUsageFlagBits::eSampled);
 
 		float rotationSpeed = 0.3f;
 
