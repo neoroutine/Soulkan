@@ -12,7 +12,7 @@ struct Vertex
 	vec2 uv;
 };
 
-layout(buffer_reference, scalar, buffer_reference_align = 32) readonly buffer Vertices
+layout(buffer_reference, scalar, buffer_reference_align = 4) readonly buffer Vertices
 {
 	Vertex v[];
 };
@@ -30,6 +30,7 @@ layout(push_constant, std430) uniform Constants
 } constants;
 
 layout (location = 0) out vec4 outColor;
+layout (location = 1) out vec2 texCoords;
 
 void main()
 {
@@ -38,9 +39,11 @@ void main()
 
 	vec4 vertexPosition = vec4(constants.vertices.v[gl_BaseInstance + gl_VertexIndex].position, 1.f);
 	vec4 vertexColor = vec4(constants.vertices.v[gl_BaseInstance + gl_VertexIndex].normal, 1.f);
+	vec2 uvCoords = constants.vertices.v[gl_BaseInstance + gl_VertexIndex].uv;
 
 	gl_Position = currentMatrix * vertexPosition;
 
 	//output normal as color color
 	outColor = vertexColor;
+	texCoords = uvCoords;
 }

@@ -29,6 +29,7 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <functional>
 #include <thread>
 #include <atomic>
+#include <chrono>
 
 /*GLM includes*/
 #include <glm.hpp>
@@ -143,6 +144,33 @@ namespace SOULKAN_NAMESPACE
 
 	template<class T>
 	using ref = std::reference_wrapper<T>;
+
+	double timeDiff(std::string name, std::function<void ()>&& toBeMeasured)
+	{
+		if (name != "")
+		{
+			std::cout << "--Starting " << name << "---" << std::endl;
+		}
+		auto before = std::chrono::high_resolution_clock::now();
+
+		toBeMeasured();
+
+		auto after = std::chrono::high_resolution_clock::now();
+		
+		if (name != "")
+		{
+			std::cout << "---Ending " << name << "---" << std::endl;
+		}
+
+		std::chrono::duration<double, std::milli> durationMs = after - before;
+
+		if (name != "")
+		{
+			std::cout << "---" << name << " lasted " << durationMs.count() << " ms---" << std::endl;
+		}
+
+		return durationMs.count();
+	}
 
 	/*---------------------GLFW---------------------*/
 	class Window : Destroyable
@@ -1580,6 +1608,8 @@ namespace SOULKAN_NAMESPACE
 	class Shader : Destroyable
 	{
 	public:
+		//Does nothing, acts as default constructor
+		Shader(ref<Device> device) : device_(device) {}
 		Shader(ref<Device> device, std::string filename, vk::ShaderStageFlagBits shaderStage) : device_(device), filename_(filename), stage_(shaderStage) {}
 
 		//TODO:Implement move constructors
@@ -2285,6 +2315,9 @@ namespace SOULKAN_NAMESPACE
 	class Mesh
 	{
 	public:
+		Mesh()
+			: name_("Unknown")
+		{}
 		Mesh(std::string name, std::vector<Vertex> vertices)
 			: name_(name), vertices_(vertices)
 		{
@@ -2350,6 +2383,15 @@ namespace SOULKAN_NAMESPACE
 							vertex.normal.x = nx;
 							vertex.normal.y = ny;
 							vertex.normal.z = nz;
+						}
+
+						if (index.texcoord_index >= 0)
+						{
+							tinyobj::real_t ux = attrib.texcoords[2 * index.texcoord_index + 0];
+							tinyobj::real_t uy = attrib.texcoords[2 * index.texcoord_index + 1];
+
+							vertex.uv.x = ux;
+							vertex.uv.y = uy;
 						}
 
 						vertices.push_back(vertex);
@@ -2689,6 +2731,12 @@ namespace SOULKAN_NAMESPACE
 	class Image : Destroyable
 	{
 	public:
+		//Acts as default constructor
+		Image(ref<Allocator> allocator) : allocator_(allocator)
+		{
+			
+			destroyed_ = true; //No need to destroy here, no image has been created
+		}
 		Image(ref<Device> device, ref<Allocator> allocator, std::string filename, vk::Flags<vk::ImageUsageFlagBits> usage)
 			: allocator_(allocator)
 		{
@@ -2789,6 +2837,28 @@ namespace SOULKAN_NAMESPACE
 			graphicsQueue.submit(graphicsCommandBuffer, fence);
 
 		}
+
+		Image(Image&& other) noexcept : image_(other.image_), allocator_(other.allocator_), allocation_(other.allocation_)
+		{
+			other.image_ = vk::Image(nullptr);
+			other.allocation_ = VmaAllocation(nullptr);
+			
+		}
+		Image& operator=(Image&& other) noexcept
+		{
+			destroy();
+
+			image_ = other.image_;
+			allocator_ = other.allocator_;
+			allocation_ = other.allocation_;
+
+			other.image_ = vk::Image(nullptr);
+			other.allocation_ = VmaAllocation(nullptr);
+		}
+
+		//No copy constructors
+		Image(Image& other) = delete;
+		Image& operator=(Image& other) = delete;
 	
 		void destroy()
 		{
@@ -2804,20 +2874,6 @@ namespace SOULKAN_NAMESPACE
 			if (manual_) { return; }
 			destroy();
 		}
-
-		/*void destroy()
-		{
-			if (destroyed_) { return; }
-			if (mappable_) { vmaUnmapMemory(allocator_.get().vma(), allocation_); }
-			vmaDestroyBuffer(allocator_.get().vma(), buffer_, allocation_);
-			destroyed_ = true;
-		}
-
-		~Buffer()
-		{
-			if (manual_) { return; }
-			destroy();
-		}*/
 	
 	private:
 		vk::Image image_;
@@ -3068,8 +3124,11 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::CommandBuffer commandBuffer = graphicsCommandPool.allocate();
 		SOULKAN_NAMESPACE::Queue graphicsQueue = device.queue(SOULKAN_NAMESPACE::QueueFamilyCapability::GRAPHICS, 0);
 
-		SOULKAN_NAMESPACE::Mesh mesh = SOULKAN_NAMESPACE::Mesh::objMesh("lost_empire.obj");
-		SOULKAN_NAMESPACE::Mesh mesh2 = SOULKAN_NAMESPACE::Mesh::objMesh("moai.obj");
+		SOULKAN_NAMESPACE::Mesh mesh; 
+		SOULKAN_NAMESPACE::timeDiff("Lost empire mesh loading", [&]() {mesh = SOULKAN_NAMESPACE::Mesh::objMesh("lost_empire.obj"); });
+
+		SOULKAN_NAMESPACE::Mesh mesh2; 
+		SOULKAN_NAMESPACE::timeDiff("Moai mesh loading", [&]() {mesh2 = SOULKAN_NAMESPACE::Mesh::objMesh("moai.obj"); });
 		
 		//Mesh vertex buffer
 		SOULKAN_NAMESPACE::VertexBuffer vertexBuffer(device, allocator, 15'625'000 * sizeof(SOULKAN_NAMESPACE::Vertex), 100'000'000);
@@ -3121,9 +3180,11 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::Semaphore presentSemaphore(device);
 		SOULKAN_NAMESPACE::Semaphore renderSemaphore(device);
 
-		SOULKAN_NAMESPACE::Shader vertShader(device, "triangle.vert", vk::ShaderStageFlagBits::eVertex);
+		SOULKAN_NAMESPACE::Shader vertShader(device);
+		SOULKAN_NAMESPACE::timeDiff("Vertex shader compilation", [&]() {vertShader = SOULKAN_NAMESPACE::Shader(device, "triangle.vert", vk::ShaderStageFlagBits::eVertex); });
 
-		SOULKAN_NAMESPACE::Shader fragShader(device, "triangle.frag", vk::ShaderStageFlagBits::eFragment);
+		SOULKAN_NAMESPACE::Shader fragShader(device);
+		SOULKAN_NAMESPACE::timeDiff("Fragment shader compilation", [&]() {fragShader = SOULKAN_NAMESPACE::Shader(device, "triangle.frag", vk::ShaderStageFlagBits::eFragment); });
 
 
 		SOULKAN_NAMESPACE::vec_ref<SOULKAN_NAMESPACE::Shader> shaders{ vertShader, fragShader };
@@ -3139,7 +3200,8 @@ namespace SOULKAN_TEST_NAMESPACE
 		vk::Pipeline boundPipeline = solidPipeline.vk();
 		vk::PipelineLayout boundPipelineLayout = solidPipeline.layout();
 
-		SOULKAN_NAMESPACE::Image lostEmpireImage(device, allocator, "lost_empire-RGBA.png", vk::ImageUsageFlagBits::eSampled);
+		SOULKAN_NAMESPACE::Image lostEmpireImage(allocator);
+		SOULKAN_NAMESPACE::timeDiff("Lost empire image loading", [&]() {lostEmpireImage = SOULKAN_NAMESPACE::Image(device, allocator, "lost_empire-RGBA.png", vk::ImageUsageFlagBits::eSampled); });
 
 		float rotationSpeed = 0.3f;
 
