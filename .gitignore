@@ -18,3 +18,5 @@
 *.iobj
 *.ipdb
 lost_empire-RGBA.png
+*.enc
+*.spv

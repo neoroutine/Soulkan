@@ -4,5 +4,5 @@
 
 int main()
 {
-	skt::triangle_test();	
+	sk::timeDiff("Triangle test", skt::triangle_test);
 }

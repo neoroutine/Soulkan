@@ -30,6 +30,7 @@ VULKAN_HPP_DEFAULT_DISPATCH_LOADER_DYNAMIC_STORAGE
 #include <thread>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 
 /*GLM includes*/
 #include <glm.hpp>
@@ -172,6 +173,64 @@ namespace SOULKAN_NAMESPACE
 		return durationMs.count();
 	}
 
+	//Starts a thread and lets it run on its own and notify when it's done (writes true in an operationStatus map
+	void detachThreadNotify(std::function <void()>&& function, ref<std::map<std::string, bool>> operationsStatus, ref<std::string> operationName)
+	{
+		if (operationsStatus.get().find(operationName) == operationsStatus.get().end())
+		{
+			KILL(std::format("{} is not present in this map of operation statuses", operationName.get()));
+		}
+
+		std::thread independentThread([=]()
+		{
+			function();
+			operationsStatus.get()[operationName] = true;
+		});
+
+		independentThread.detach(); //Let it do its thing away from our render loop
+	}
+
+	void waitingForOperation(ref<std::map<std::string, bool>> operationsStatus, std::string operationName, bool log = false)
+	{
+		if (operationsStatus.get().find(operationName) == operationsStatus.get().end())
+		{
+			KILL(std::format("{} not present in this map of operations", operationName));
+		}
+
+		auto var = operationsStatus.get()[operationName];
+
+		while (!var)
+		{
+			if (log)
+			{
+				std::cout << "Waiting for " << operationName << std::endl;
+			}
+			
+			std::this_thread::sleep_for(std::chrono::milliseconds(100));
+			var = operationsStatus.get()[operationName];
+		}
+	}
+	void waitingForOperations(ref<std::map<std::string, bool>> operationsStatus, bool log = false)
+	{
+		bool waitingForOperations = true;
+		while (waitingForOperations)
+		{
+			bool operationsFinished = true;
+			for (auto& [name, status] : operationsStatus.get())
+			{
+				if (!status)
+				{
+					operationsFinished = status; //Waiting for this operation
+					if (log)
+					{
+						std::cout << "Waiting for " << name << std::endl;
+					}
+				}
+			}
+
+			waitingForOperations = !operationsFinished;
+		}
+	}
 	/*---------------------GLFW---------------------*/
 	class Window : Destroyable
 	{
@@ -608,9 +667,12 @@ namespace SOULKAN_NAMESPACE
 
 			enabledExtensions_.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);//INFO:Avoid setting up Renderpasses and framebuffers
 
-			enabledExtensions_.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);//INFO:Query 64 bit buffer address to use it in shaders
+			enabledExtensions_.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);//INFO:Query 64 bit buffer address to pass to shaders
+
+			enabledExtensions_.push_back(VK_KHR_MAINTENANCE3_EXTENSION_NAME);//INFO:Required for descriptor indexing
 
 			enabledExtensions_.push_back(VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME);//INFO:Required for descriptor buffer
+
 			enabledExtensions_.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);//INFO:Descriptors are backed by buffers
 
 
@@ -624,12 +686,17 @@ namespace SOULKAN_NAMESPACE
 			vk::PhysicalDeviceFeatures2 features = {};
 
 			vk::PhysicalDeviceVulkan11Features features11 = {};
-			features11.shaderDrawParameters = true;
+			features11.shaderDrawParameters = true; //INFO:gl_InstanceIndex in shader
 
 			vk::PhysicalDeviceVulkan12Features features12 = {};
 			features12.bufferDeviceAddress = true;
 			features12.bufferDeviceAddressCaptureReplay = true;
+
 			features12.descriptorIndexing = true;
+			features12.shaderSampledImageArrayNonUniformIndexing = true;//INFO:Index into arrays of samplers in shader
+			features12.runtimeDescriptorArray = true; //INFO:Descriptors in runtime arrays
+			features12.descriptorBindingVariableDescriptorCount = true; //INFO:Allows variable sized last binding in descriptor set
+
 
 			vk::PhysicalDeviceVulkan13Features features13 = {};
 			features13.dynamicRendering = true;
@@ -1692,47 +1759,75 @@ namespace SOULKAN_NAMESPACE
 
 		//INFO:Expensive, will compile glsl to spirv and then create module according to spirv binary if it has not been compiled yet
 		//INFO:Recompile if needed
-		vk::ShaderModule shader(bool recompile = false)
+		vk::ShaderModule shader()
 		{
-			if (compiled)
-			{
-				if (recompile)
-				{
-					std::string oldSource = source_;
-					std::string newSource = source(true);
+			std::vector<uint32_t> spirv;
 
-					if (oldSource == newSource) 
+			bool loadSpirv = false;
+
+			std::ifstream lastSpirv(filename_ + ".spv", std::ios::binary);
+			std::ifstream lastSrc(filename_);
+			if (lastSpirv.good() && lastSrc.good())
+			{
+				auto lastWriteSrc = std::filesystem::last_write_time(std::filesystem::path(filename_));
+				auto lastWriteSpirv = std::filesystem::last_write_time(std::filesystem::path(filename_ + ".spv"));
+				
+				if (lastWriteSrc < lastWriteSpirv)
+				{
+					if (compiled)
 					{
-						//INFO:Same source, no modifications seen, returning same module
 						return module_;
 					}
+					
+					loadSpirv = true;
+
 				}
-				else
-				{
-					return module_;
-				}
-				
+
 			}
-
-			shaderc::Compiler compiler;
-			shaderc::CompileOptions options;
-
-			shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(source(), kind(), filename_.c_str());
-
-			if (result.GetCompilationStatus() != shaderc_compilation_status_success)
-			{
-				std::string errorMessage = std::format("Could not compile shader : [{}], error: [{}]", filename_, result.GetErrorMessage());
-				KILL(errorMessage);
-			}
-
-			std::vector<uint32_t> spirv;
-			spirv.assign(result.cbegin(), result.cend());
 
 			vk::ShaderModuleCreateInfo createInfo = {};
-			createInfo.codeSize = spirv.size()*sizeof(uint32_t);
-			createInfo.pCode = spirv.data();
+			if (!loadSpirv)
+			{
+				shaderc::Compiler compiler;
+				shaderc::CompileOptions options;
 
-			VK_CHECK(device_.get().vk().createShaderModule(&createInfo, nullptr, &module_));
+				shaderc::SpvCompilationResult result = compiler.CompileGlslToSpv(source(), kind(), filename_.c_str());
+
+				if (result.GetCompilationStatus() != shaderc_compilation_status_success)
+				{
+					std::string errorMessage = std::format("Could not compile shader : [{}], error: [{}]", filename_, result.GetErrorMessage());
+					KILL(errorMessage);
+				}
+
+				spirv.assign(result.cbegin(), result.cend());
+				createInfo.codeSize = spirv.size() * sizeof(uint32_t);
+				createInfo.pCode = spirv.data();
+
+				std::ofstream spirvFile(filename_ + ".spv", std::ios::binary);
+				spirvFile.write((char*)spirv.data(), spirv.size() * sizeof(uint32_t));
+				spirvFile.close();
+
+				VK_CHECK(device_.get().vk().createShaderModule(&createInfo, nullptr, &module_));
+			}
+
+			if (loadSpirv)
+			{
+				lastSpirv.seekg(0, std::ios::end);
+				size_t fileSize = lastSpirv.tellg();
+				lastSpirv.seekg(0, std::ios::beg);				
+
+				std::vector<uint32_t> spirvData(fileSize / sizeof(uint32_t));
+				lastSpirv.read((char*)spirvData.data(), fileSize);
+
+				createInfo.codeSize = fileSize;
+				createInfo.pCode = spirvData.data();
+
+				VK_CHECK(device_.get().vk().createShaderModule(&createInfo, nullptr, &module_));
+			}
+
+			lastSrc.close();
+			lastSpirv.close();
+			
 			compiled = true;
 
 			return module_;
@@ -1763,6 +1858,7 @@ namespace SOULKAN_NAMESPACE
 	class GraphicsPipeline : Destroyable
 	{
 	public:
+		//Acts as default constructor
 		GraphicsPipeline(ref<Device> device) : device_(device) {}
 		//INFO:Very expensive, might compile shader if not already compiled, lots of structs, ...
 		GraphicsPipeline(ref<Device> device, vec_ref<Shader> shaders, vk::PrimitiveTopology topology, vk::PolygonMode polygonMode, vk::Extent2D extent, vk::Format imageFormat) :
@@ -1888,6 +1984,7 @@ namespace SOULKAN_NAMESPACE
 			createInfo.pNext = &rendering;
 
 			auto result = device_.get().vk().createGraphicsPipeline(nullptr, createInfo);
+
 			VK_CHECK(result.result);
 
 			pipeline_ = result.value;
@@ -2842,7 +2939,9 @@ namespace SOULKAN_NAMESPACE
 		{
 			other.image_ = vk::Image(nullptr);
 			other.allocation_ = VmaAllocation(nullptr);
-			
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
 		}
 		Image& operator=(Image&& other) noexcept
 		{
@@ -2854,6 +2953,11 @@ namespace SOULKAN_NAMESPACE
 
 			other.image_ = vk::Image(nullptr);
 			other.allocation_ = VmaAllocation(nullptr);
+
+			destroyed_ = other.destroyed_;
+			other.destroyed_ = true;
+
+			return *this;
 		}
 
 		//No copy constructors
@@ -3098,8 +3202,6 @@ namespace SOULKAN_TEST_NAMESPACE
 		glfwInit();
 		dq.push([]() { glfwTerminate(); });
 
-		std::cout << "Sizeof(Vertex) = " << sizeof(SOULKAN_NAMESPACE::Vertex) << std::endl;
-
 		uint32_t windowWidth = 1200;
 		uint32_t windowHeight = 800;
 
@@ -3124,15 +3226,41 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::CommandBuffer commandBuffer = graphicsCommandPool.allocate();
 		SOULKAN_NAMESPACE::Queue graphicsQueue = device.queue(SOULKAN_NAMESPACE::QueueFamilyCapability::GRAPHICS, 0);
 
-		SOULKAN_NAMESPACE::Mesh mesh; 
-		SOULKAN_NAMESPACE::timeDiff("Lost empire mesh loading", [&]() {mesh = SOULKAN_NAMESPACE::Mesh::objMesh("lost_empire.obj"); });
+		std::string lostEmpireMeshLoading = "lostEmpireMeshLoading";
+		std::string moaiMeshLoading = "moaiMeshLoading";
+		std::string vertShaderCompilation = "vertShaderCompilation";
+		std::string fragShaderCompilation = "fragShaderCompilation";
+		std::string lostEmpireImageLoading = "lostEmpireImageLoading";
+		std::map<std::string, bool> operationsStatus{ {lostEmpireMeshLoading, false}, {moaiMeshLoading, false},
+														{vertShaderCompilation, false}, {fragShaderCompilation, false},
+														{lostEmpireImageLoading, false} };
 
-		SOULKAN_NAMESPACE::Mesh mesh2; 
-		SOULKAN_NAMESPACE::timeDiff("Moai mesh loading", [&]() {mesh2 = SOULKAN_NAMESPACE::Mesh::objMesh("moai.obj"); });
-		
+		SOULKAN_NAMESPACE::Mesh mesh;
+		SOULKAN_NAMESPACE::detachThreadNotify([&]() { SOULKAN_NAMESPACE::timeDiff("Lost empire mesh loading", [&]() {mesh = SOULKAN_NAMESPACE::Mesh::objMesh("lost_empire.obj"); }); },
+			operationsStatus, lostEmpireMeshLoading);
+
+		SOULKAN_NAMESPACE::Mesh mesh2;
+		SOULKAN_NAMESPACE::detachThreadNotify([&]() { SOULKAN_NAMESPACE::timeDiff("Moai mesh loading", [&]() {mesh2 = SOULKAN_NAMESPACE::Mesh::objMesh("moai.obj"); }); },
+			operationsStatus, moaiMeshLoading);
+
+		SOULKAN_NAMESPACE::Image lostEmpireImage(allocator);
+		SOULKAN_NAMESPACE::detachThreadNotify([&]() {SOULKAN_NAMESPACE::timeDiff("Lost empire image loading", [&]() {lostEmpireImage = SOULKAN_NAMESPACE::Image(device, allocator, "lost_empire-RGBA.png", vk::ImageUsageFlagBits::eSampled); }); },
+			operationsStatus, lostEmpireImageLoading);
+
+		SOULKAN_NAMESPACE::Shader vertShader(device, "triangle.vert", vk::ShaderStageFlagBits::eVertex);
+		SOULKAN_NAMESPACE::detachThreadNotify([&]() {SOULKAN_NAMESPACE::timeDiff("Vertex shader compilation", [&]() {vertShader.shader(); }); },
+			operationsStatus, vertShaderCompilation);
+
+		SOULKAN_NAMESPACE::Shader fragShader(device, "triangle.frag", vk::ShaderStageFlagBits::eFragment);;
+		SOULKAN_NAMESPACE::detachThreadNotify([&]() {SOULKAN_NAMESPACE::timeDiff("Fragment shader compilation", [&]() {fragShader.shader(); }); },
+			operationsStatus, fragShaderCompilation);
+
 		//Mesh vertex buffer
 		SOULKAN_NAMESPACE::VertexBuffer vertexBuffer(device, allocator, 15'625'000 * sizeof(SOULKAN_NAMESPACE::Vertex), 100'000'000);
 
+
+		SOULKAN_NAMESPACE::waitingForOperation(operationsStatus, "lostEmpireMeshLoading", true);
+		SOULKAN_NAMESPACE::waitingForOperation(operationsStatus, "moaiMeshLoading");
 		vertexBuffer.add(mesh.name(), mesh.data(), mesh.size());
 		vertexBuffer.add(mesh2.name(), mesh2.data(), mesh2.size());
 
@@ -3180,28 +3308,24 @@ namespace SOULKAN_TEST_NAMESPACE
 		SOULKAN_NAMESPACE::Semaphore presentSemaphore(device);
 		SOULKAN_NAMESPACE::Semaphore renderSemaphore(device);
 
-		SOULKAN_NAMESPACE::Shader vertShader(device);
-		SOULKAN_NAMESPACE::timeDiff("Vertex shader compilation", [&]() {vertShader = SOULKAN_NAMESPACE::Shader(device, "triangle.vert", vk::ShaderStageFlagBits::eVertex); });
 
-		SOULKAN_NAMESPACE::Shader fragShader(device);
-		SOULKAN_NAMESPACE::timeDiff("Fragment shader compilation", [&]() {fragShader = SOULKAN_NAMESPACE::Shader(device, "triangle.frag", vk::ShaderStageFlagBits::eFragment); });
-
-
+		SOULKAN_NAMESPACE::waitingForOperation(operationsStatus, "vertShaderCompilation");
+		SOULKAN_NAMESPACE::waitingForOperation(operationsStatus, "fragShaderCompilation");
 		SOULKAN_NAMESPACE::vec_ref<SOULKAN_NAMESPACE::Shader> shaders{ vertShader, fragShader };
 
 		SOULKAN_NAMESPACE::GraphicsPipeline solidPipelineTmp(device);
-		SOULKAN_NAMESPACE::GraphicsPipeline solidPipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eFill, swapchain.extent(), swapchain.imageFormat());
+
+		SOULKAN_NAMESPACE::GraphicsPipeline solidPipeline(device);
+		SOULKAN_NAMESPACE::timeDiff("trianglePipeline", [&]() {solidPipeline = SOULKAN_NAMESPACE::GraphicsPipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eFill, swapchain.extent(), swapchain.imageFormat()); });
 		
 		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipelineTmp(device);
-		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eLine, swapchain.extent(), swapchain.imageFormat());
+		SOULKAN_NAMESPACE::GraphicsPipeline wireframePipeline(device);
+		SOULKAN_NAMESPACE::timeDiff("wireframePipeline", [&]() {wireframePipeline = SOULKAN_NAMESPACE::GraphicsPipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eLine, swapchain.extent(), swapchain.imageFormat()); });
 
 		SOULKAN_NAMESPACE::Camera camera(window, glm::vec3(0.f, 0.f, 0.f));
 
 		vk::Pipeline boundPipeline = solidPipeline.vk();
 		vk::PipelineLayout boundPipelineLayout = solidPipeline.layout();
-
-		SOULKAN_NAMESPACE::Image lostEmpireImage(allocator);
-		SOULKAN_NAMESPACE::timeDiff("Lost empire image loading", [&]() {lostEmpireImage = SOULKAN_NAMESPACE::Image(device, allocator, "lost_empire-RGBA.png", vk::ImageUsageFlagBits::eSampled); });
 
 		float rotationSpeed = 0.3f;
 
@@ -3217,6 +3341,32 @@ namespace SOULKAN_TEST_NAMESPACE
 		float deltaTime = 0;
 
 		float aspectRatio = 1700.f / 900.f;
+
+		//Temporary place for descriptor set
+
+		//Binding
+		vk::DescriptorSetLayoutBinding samplerLayoutBinding = {};
+		samplerLayoutBinding.binding = 0;
+		samplerLayoutBinding.descriptorCount = 1;
+		samplerLayoutBinding.descriptorType = vk::DescriptorType::eCombinedImageSampler;//Sampler + Image in same descriptor
+		samplerLayoutBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+
+		//Layout
+		vk::DescriptorSetLayoutCreateInfo samplerLayoutCreateInfo = {};
+		samplerLayoutCreateInfo.bindingCount = 1;
+		samplerLayoutCreateInfo.pBindings = &samplerLayoutBinding;
+		samplerLayoutCreateInfo.flags = vk::DescriptorSetLayoutCreateFlagBits::eDescriptorBufferEXT;
+
+		//vk::DescriptorSetLayout samplerLayout;
+		//VK_CHECK(device.vk().createDescriptorSetLayout(&samplerLayoutCreateInfo, nullptr, &samplerLayout));
+		//
+		////Layout size
+		//vk::DeviceSize samplerLayoutSize = 0;
+		//samplerLayoutSize = device.vk().getDescriptorSetLayoutSizeEXT(samplerLayout);
+
+		//std::cout << "Sampler layout size = " << samplerLayoutSize << std::endl;
+
+		SOULKAN_NAMESPACE::waitingForOperations(operationsStatus);
 
 		while (!glfwWindowShouldClose(window.window()))
 		{
@@ -3277,8 +3427,8 @@ namespace SOULKAN_TEST_NAMESPACE
 
 				std::thread shaderCompilationThread([&]()
 					{
-						shaders[0].get().shader(true);//Vertex
-						shaders[1].get().shader(true);//Fragment
+						shaders[0].get().shader();//Vertex
+						shaders[1].get().shader();//Fragment
 
 						solidPipelineTmp = SOULKAN_NAMESPACE::GraphicsPipeline(device, shaders, vk::PrimitiveTopology::eTriangleList, vk::PolygonMode::eFill, swapchain.extent(), swapchain.imageFormat());
 
